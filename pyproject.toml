@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jev-bug-hunter"
+dynamic = ["version"]
+description = "Jev-led multiscale and evidence-relationship bug triage"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "Jev Bug Hunter contributors"}]
+requires-python = ">=3.11"
+dependencies = []
+keywords = ["code-review", "bug-detection", "llm-judge", "jev", "typesafe"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Intended Audience :: Developers",
+  "Topic :: Software Development :: Quality Assurance",
+]
+
+[project.scripts]
+jev-bug-hunter = "bug_hunter.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["bug_hunter*"]
+
+[tool.setuptools.package-data]
+bug_hunter = ["question_pack.json"]
+
+[tool.setuptools.dynamic]
+version = {attr = "bug_hunter.__version__"}
