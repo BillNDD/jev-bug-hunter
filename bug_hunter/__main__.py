@@ -56,6 +56,10 @@ def parser() -> argparse.ArgumentParser:
                         default=Decimal("0.60"))
     result.add_argument("--report-threshold", type=decimal_argument,
                         default=Decimal("0.80"))
+    result.add_argument("--search-policy", choices=("legacy-v1", "scoped-v2-beta"),
+                        default="legacy-v1", help="Opt in to scoped verification and exploratory beams.")
+    result.add_argument("--refute-threshold", type=decimal_argument, default=Decimal("0.80"),
+                        help="Explicit-refutation threshold for scoped-v2-beta only.")
     result.add_argument("--max-calls", type=int, default=1000)
     result.add_argument("--max-questions", type=int, default=20000)
     result.add_argument("--max-windows", type=int, default=50000)
@@ -151,6 +155,8 @@ def execute(args: argparse.Namespace) -> int:
         context_lines=args.context_lines,
         drill_threshold=args.drill_threshold,
         report_threshold=args.report_threshold,
+        search_policy=args.search_policy,
+        refute_threshold=args.refute_threshold,
         max_calls=args.max_calls,
         max_questions=args.max_questions,
         max_windows=args.max_windows,

@@ -23,6 +23,8 @@ def assessment(search, target):
     'Conflicting' denotes crossing the configured reporting threshold, not a
     statistical contradiction. Failed evaluations are unknown, not zero.
     """
+    if getattr(search, "scoped", None):
+        return search.scoped.assessment(target)
     bounds = [target.start, target.end]
     values = [Decimal(row["judgments"]["screen"]) for row in search.observations
               if [row["start_line"], row["end_line"]] == bounds
@@ -384,7 +386,7 @@ def compact_report(report):
         if f["limitations"]:
             row["limitations"] = f["limitations"]
         rows.append(row)
-    return {"schema_version": 2, "source": report["source"],
+    return {"schema_version": 3 if report["schema_version"] == 6 else 2, "source": report["source"],
             "specification": report["specification"],
             "specification_mode": report["specification_mode"],
             "scan_status": report["scan_status"],

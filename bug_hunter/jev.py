@@ -343,10 +343,10 @@ def plain(value):
     return value
 
 
-def _http_exchange(wire: bytes, api_key: str) -> bytes:
+def _http_exchange(wire: bytes, api_key: str, timeout: float = 30.0) -> bytes:
     """Fixed HTTPS destination. http.client does not follow redirects/proxies."""
     connection = http.client.HTTPSConnection(
-        "api.typesafe.ai", 443, timeout=20, context=ssl.create_default_context())
+        "api.typesafe.ai", 443, timeout=timeout, context=ssl.create_default_context())
     try:
         connection.request("POST", "/v1/systemone", body=wire, headers={
             "Authorization": "Bearer " + api_key, "Content-Type": "application/json",
@@ -511,7 +511,8 @@ class HostedJev:
             receipt["question_count"] = len(qs)
             receipt["request_sha256"] = hashlib.sha256(wire).hexdigest()
             _write_receipt(path, receipt)
-            env = dict(os.environ)
+            env = {k: os.environ[k] for k in ("SYSTEMROOT", "WINDIR", "TEMP", "TMP")
+                   if k in os.environ}
             env["TYPESAFE_API_KEY"] = self._api_key
             timeout = self.deadline_seconds
             if self.run_deadline is not None:
@@ -527,10 +528,14 @@ class HostedJev:
                 timeout = min(timeout, self.run_deadline - time.monotonic())
                 if timeout <= 0:
                     raise JevError("run_deadline_exceeded")
+            env["JEV_CALL_TIMEOUT_SECONDS"] = repr(timeout)
+            receipt["transport_timeout_seconds"] = timeout
+            transport_started = time.monotonic()
             result = subprocess.run(
                 [sys.executable, "-I", str(Path(__file__).resolve()),
                  "--transport-child"], input=wire, capture_output=True, env=env,
                 timeout=timeout, check=False)
+            receipt["transport_elapsed_seconds"] = round(time.monotonic() - transport_started, 6)
             if result.returncode != 0:
                 code = result.stderr.decode("ascii", errors="ignore").strip()
                 raise JevError(code if code in ERROR_CODES else "transport_failed")
@@ -538,8 +543,12 @@ class HostedJev:
             if type(raw) is not bytes or len(raw) > MAX_RESPONSE_BYTES:
                 raise JevError("response_too_large")
             receipt["response_sha256"] = hashlib.sha256(raw).hexdigest()
+            validation_started = time.monotonic()
             value, usage = validate_answers(raw, qs, self._api_key, self.rounding_places,
                                             usage_out=usage_meta)
+            receipt["validation_elapsed_seconds"] = round(time.monotonic() - validation_started, 6)
+            receipt["request_bytes"] = len(wire)
+            receipt["response_bytes"] = len(raw)
             receipt.update(status="validated", answers=plain(value), usage=usage)
             if set(value) == {"q"} and value["q"]["type"] == "noul":
                 receipt["score"] = str(value["q"]["noul"])
@@ -570,6 +579,9 @@ def _transport_child():
     code = None
     try:
         key = _key()
+        timeout = float(os.environ.get("JEV_CALL_TIMEOUT_SECONDS", "30.0"))
+        if not math.isfinite(timeout) or not 0 < timeout <= 300:
+            raise JevError("invalid_deadline")
         wire = sys.stdin.buffer.read(MAX_REQUEST_BYTES + 1)
         if len(wire) > MAX_REQUEST_BYTES:
             raise JevError("request_too_large")
@@ -581,10 +593,12 @@ def _transport_child():
                 or encode_request(request["state"], request["questions"]) != wire):
             raise JevError("invalid_request")
         check_sensitive(request["state"], request["questions"])
-        sys.stdout.buffer.write(_http_exchange(wire, key))
+        sys.stdout.buffer.write(_http_exchange(wire, key, timeout=timeout))
         return 0
     except JevError as exc:
         code = exc.code
+    except TimeoutError:
+        code = "deadline_exceeded"
     except Exception:
         code = "transport_failed"
     sys.stderr.write(code + "\n")

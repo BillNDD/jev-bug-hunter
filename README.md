@@ -2,6 +2,14 @@
 
 A bounded, first-pass bug hunter — one more tool in the toolshed.
 
+**v0.5.0b1 is an experimental beta.** Existing commands use `legacy-v1`.
+Use `--search-policy scoped-v2-beta` to try evidence-scoped verification and
+broader Choice exploration. See [the beta review and migration brief](docs/BETA_REVIEW.md)
+for implemented changes, qualifications, and the remaining roadmap. The
+[validation record](docs/RELEASE_VALIDATION.md) and
+[effectiveness/performance review](docs/EXPERT_REVIEW.md) describe the evidence
+and next priorities.
+
 `jev-bug-hunter` is a first-pass bug hunter for source files.
 Point it at a file — optionally with a specification and a related-files scope —
 and it returns suspected regions using the TypeSafe Jev judge. Call, question,
@@ -16,17 +24,20 @@ for localization. Every response is validated before it can affect anything:
 exact displayed-argmax under the selected probability profile, atomic batches,
 a fixed error taxonomy, and fail-closed handling — a malformed or missing
 answer becomes a recorded limitation, never an invented score. Evidence
-accumulates in a local audit trail whose receipts hold hashes and usage
-metadata only, never your source, your specification, or your credentials.
+accumulates in a local audit trail whose receipts hold hashes, usage metadata
+and validated judgments, never your source, your specification, or your credentials.
 
 The loop: every window is screened; hot regions are drilled into; suspicious
 spans are re-asked as independent recheck questions that never echo their own
 answer; and the judge itself then chooses among a bounded set of investigation
 steps — read another region, test a cross-file relationship, search the
 specification — each paired with a "continue?" control under a hard budget.
-Evidence only becomes a reported finding when it survives that whole loop: a
-general screen hit, an independent recheck, or a relationship with no contrary
-recheck behind it. Findings carry line citations with optional read-with and
+General screen hits can establish initial suspicions even when later
+investigation is unresolved. In `legacy-v1`, direct rechecks provide additional
+support and relationships can promote only without a contrary same-span recheck.
+The beta instead binds support, explicit refutation and missing evidence to a
+specific provisional proposition and evidence revision. Findings carry line
+citations with optional read-with and
 requirement references, and the statuses are honest — "unknown" and
 "not-identified" are real outputs, and any failed search, hit limit, or
 incomplete pass marks the run incomplete rather than clean.
@@ -67,6 +78,18 @@ Exit codes: `0` complete, no suspicions · `1` complete, suspicions reported ·
 `2` scan failed or incomplete · `3` caller input needed (see `NEED_USER_INPUT`).
 
 ## Setup
+
+Install Python 3.11 or newer, then install this beta in a virtual environment:
+
+```sh
+python -m venv .venv
+# Activate .venv using your shell's activation command.
+python -m pip install "git+https://github.com/BillNDD/jev-bug-hunter.git@v0.5.0b1"
+jev-bug-hunter --help
+```
+
+For a source checkout, clone the repository, enter its directory, and run
+`python -m pip install .`. No third-party runtime dependencies are required.
 
 Real scans call the hosted TypeSafe service (`api.typesafe.ai`) and need your own
 `TYPESAFE_API_KEY`. The key is read from the environment only — never a flag or
@@ -145,9 +168,17 @@ regular/half-offset/end-anchored targets. Smaller targets are screened even when
 parents are cold. Eligible small targets offer complete contiguous intervals to
 Jev Choice, followed by a separate Noul recheck. Broad suspicions are retained
 when narrowing is unsupported or incomplete.
-The bounded localization beam uses alternatives from the same Choice vector.
+Under `legacy-v1`, the bounded localization beam uses alternatives from the same Choice vector.
 Every candidate retains `min(confidence, p[candidate]) >= choice-confidence`;
 probabilities are never compared across menus or summed into bug confidence.
+That legacy 0.50 gate cannot admit three options in a normalized distribution.
+The opt-in beta selects up to three positive-mass options from one valid menu,
+then verifies each independently. This optional beam ends after that menu;
+removing an option cannot remove the corresponding defect from the evidence.
+Low Choice confidence is retained as a diagnostic. Sentinel disagreements can
+trigger bounded mechanical subdivision and an unresolved limitation; they do
+not establish a clean result. Truncating the planned beam with a hard budget
+records incompleteness.
 
 ## Jev action semantics
 
@@ -167,13 +198,20 @@ questions share a request when they fit. Requirement relevance questions sharing
 one view are batched as well.
 
 A qualifying relationship verification can route an initially cold target into
-the action loop. This grants no early report support: promotion still waits for
-the contrary-recheck check. If retrieved evidence supplies previously missing
+the action loop. Promotion is deferred until final reconciliation. Under
+`legacy-v1` it still requires the contrary-recheck check. If retrieved evidence supplies previously missing
 context, a fresh `need_context` Noul reassesses the original region. Only a
 validated value below the context threshold makes that old limitation
 non-affecting. The original issue and a `context_reassessed` event remain in the
 report; unrelated errors and contrary rechecks are preserved. Failed checks are
 not retried on unchanged evidence.
+
+Beta direct rechecks receive the actual retrieved passages within the evidence
+and payload caps. A low support value alone does not refute a proposition.
+Conflicts may receive one assessment of the original combined passages; it can
+supersede only observations whose evidence it includes. Superseded observations
+cannot lend their relationship gate to a new assessment. Other missing-evidence
+and execution limitations remain visible.
 
 Positive action-step/target budgets that leave work unexamined make the run
 incomplete. Setting either action limit to zero explicitly disables that phase
@@ -208,12 +246,14 @@ from the actual candidate text it is shown.
 | `--context-lines` | 12 | halo lines around a target |
 | `--inspect-threshold` | 0.60 | drill threshold |
 | `--report-threshold` | 0.80 | report/support threshold |
+| `--search-policy` | legacy-v1 | opt in with `scoped-v2-beta`; changes judgments and exploration |
+| `--refute-threshold` | 0.80 | explicit refutation cutoff in the beta policy only |
 | `--context-threshold` | 0.60 | context/evidence/requirement relevance threshold |
 | `--relation-threshold` | 0.70 | target↔evidence relationship threshold |
-| `--choice-confidence` | 0.50 | choice execution cutoff; not bug confidence |
+| `--choice-confidence` | 0.50 | legacy Choice execution cutoff; beta exploration uses positive-mass ranking |
 | `--choice-rounding-places` | off | opt-in mass tolerance for nearest rounding at N places, 2–8 |
 | `--strict-choice-mass` | default behavior | mutually exclusive with explicit rounding; normalized mass with 10^-12 serialization slack |
-| `--localization-beam-width` | 3 | candidate intervals per round, each independently gated; max-localizations still caps their total |
+| `--localization-beam-width` | 3 | legacy gated intervals per round; beta positive-mass intervals from one menu; max-localizations caps both |
 | `--no-bug-lenses` | off | disable the five extra Jev bug-lens questions |
 | `--max-action-steps` / `--max-action-targets` | 4 / 32 | bounded investigation actions |
 | `--evidence-min-width` / `--evidence-beam-width` / `--evidence-max-depth` | 8 / 3 / 4 | evidence search geometry |
@@ -233,6 +273,10 @@ Both probability profiles require the exact displayed argmax; displayed ties
 are allowed. Rounding tolerance applies to total mass, does not normalize or
 modify returned values, and does not require values to lie on a decimal grid.
 It is an explicit local acceptance policy, not a guarantee of provider precision.
+
+The isolated child receives the effective per-call timeout, including the
+remaining run budget. Socket timeouts report `deadline_exceeded`. The parent
+still enforces the overall transport deadline and terminates a stalled child.
 
 The run deadline is checked at work boundaries; hosted transport gets at most
 the remaining time. It stops further work and records incompleteness. It cannot
@@ -293,6 +337,12 @@ authorized provider runs; none are implied by the offline suite.
 - `report.json`: schema **5**
 - `handoff.json`: schema **2**
 - receipts: schema **3**
+
+The opt-in beta uses report **6** and handoff **3**. It adds scoped proposition,
+evidence-revision and role-evaluation records, policy identity, and separate
+execution/assessment status. Receipt 3 gains optional measured timeout,
+transport/validation duration and wire-size metadata. Historical receipt and
+legacy report meanings remain unchanged.
 
 ## Limitations
 

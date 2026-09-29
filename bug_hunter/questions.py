@@ -6,7 +6,8 @@ import json
 from importlib.resources import files
 
 from .core import Span, physical_lines
-from .jev import encode_request, JevError, MAX_QUESTIONS
+from .jev import (encode_request, JevError, MAX_QUESTIONS, MAX_STATE_BYTES,
+                  MAX_REQUEST_BYTES, MODEL, _snapshot, _json, validate_questions)
 
 
 def load_pack():
@@ -137,29 +138,40 @@ def fitting_state(source, region, halo, spec, probe, extras=(), *, context_scope
 
 
 def pack_questions(state, questions):
-    """Yield (batch, failed_single_id). Never silently discard a question."""
-    batch = {}
-    for qid, question in questions.items():
-        candidate = {**batch, qid: question}
-        try:
-            if len(candidate) > MAX_QUESTIONS:
-                raise JevError("request_too_large")
-            encode_request(state, candidate)
-        except JevError as exc:
-            if exc.code != "request_too_large":
-                raise
-            if batch:
+    """Exact incremental UTF-8 sizing; authoritative validation at each flush.
+
+Preserves option, question, state and batch order. A singleton that cannot fit
+is returned as a named failure. The caller still validates each actual response
+atomically. No evidence or question is dropped to make a request smaller.
+"""
+    if not questions:
+        return
+    try:
+        state, questions = _snapshot(state), _snapshot(questions)
+        if type(state) is not dict or type(questions) is not dict:
+            raise JevError("invalid_request")
+        state_fits = len(_json(state)) <= MAX_STATE_BYTES
+        base = len(_json({"model": MODEL, "state": state, "questions": {}}))
+        batch, size = {}, base
+        for qid, question in questions.items():
+            validate_questions({qid: question})
+            entry_size = len(_json({qid: question})) - 2
+            predicted = size + entry_size + bool(batch)
+            if batch and (len(batch) == MAX_QUESTIONS or predicted > MAX_REQUEST_BYTES):
+                if len(encode_request(state, batch)) != size:
+                    raise JevError("invalid_request")
                 yield batch, None
-                batch = {}
-            try:
-                encode_request(state, {qid: question})
-            except JevError as inner:
-                if inner.code != "request_too_large":
-                    raise
+                batch, size = {}, base
+            if not state_fits or base + entry_size > MAX_REQUEST_BYTES:
                 yield {}, qid
                 continue
-            batch = {qid: question}
-        else:
-            batch = candidate
-    if batch:
-        yield batch, None
+            size += entry_size + bool(batch)
+            batch[qid] = question
+        if batch:
+            if len(encode_request(state, batch)) != size:
+                raise JevError("invalid_request")
+            yield batch, None
+    except JevError:
+        raise
+    except (ValueError, TypeError, UnicodeError):
+        raise JevError("invalid_request") from None

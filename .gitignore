@@ -3,3 +3,8 @@ __pycache__/
 bug_hunter_runs/
 runs/
 .env
+*.egg-info/
+build/
+dist/
+.venv/
+smoke-results*/

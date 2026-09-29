@@ -122,6 +122,8 @@ class Config:
     max_project_candidates: int = 128
     localization_beam_width: int = 3
     run_deadline_seconds: float = 300.0
+    search_policy: str = "legacy-v1"
+    refute_threshold: Decimal = Decimal("0.80")
 
     def __post_init__(self):
         limits = ((self.width, 2, 4096), (self.min_width, 1, self.width),
@@ -142,7 +144,7 @@ class Config:
         if any(type(v) is not int or not lo <= v <= hi for v, lo, hi in limits):
             raise ValueError("invalid_search_configuration")
         for name in ("drill_threshold", "report_threshold", "context_threshold",
-                     "choice_confidence", "relation_threshold"):
+                     "choice_confidence", "relation_threshold", "refute_threshold"):
             value = getattr(self, name)
             if type(value) not in (int, float, Decimal):
                 raise ValueError("invalid_threshold")
@@ -152,6 +154,8 @@ class Config:
             object.__setattr__(self, name, value)
         if self.drill_threshold > self.report_threshold:
             raise ValueError("drill_threshold_exceeds_report_threshold")
+        if self.search_policy not in ("legacy-v1", "scoped-v2-beta"):
+            raise ValueError("invalid_search_policy")
         if type(self.whole_file) is not bool:
             raise ValueError("invalid_whole_file_flag")
         if type(self.bug_lenses) is not bool:

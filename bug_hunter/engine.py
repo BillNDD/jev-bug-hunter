@@ -15,6 +15,7 @@ import math
 import time
 
 from . import __version__
+from .claims import select_exploration, identity
 from .core import Config, Source, Span, _coverage, windows, multiscale
 from .core import contiguous_candidates
 from .evidence import EvidenceRef, evidence_label, fitting_pair_state, excerpt
@@ -77,6 +78,12 @@ class Search:
         self.action_requirement_stats = {}
         self.evidence_refs = {}
         self.context_reassessed_states = set()
+        self.request_origins, self.failed_requests = {}, {}
+        self.search_memos = {}
+        self.scoped = None
+        if config.search_policy == "scoped-v2-beta":
+            from .claim_search import ScopedClaims
+            self.scoped = ScopedClaims(self)
         self.usage = {"input_tokens": 0, "output_tokens": 0,
                       "attempts_with_known_usage": 0, "attempts_with_unknown_usage": 0}
         if self.project is not None and self.project.limited and self.source.lines:
@@ -133,6 +140,13 @@ class Search:
                 # Never return cache-owned mutable dictionaries to a caller.
                 result.update(deepcopy(self.cache[key]))
                 self.cache_hits += 1
+                self.events.append({"phase": "judgment_reuse", "request_sha256": key,
+                                    "origin": self.request_origins[key]})
+                continue
+            if self.scoped and key in self.failed_requests:
+                self.issue(self.failed_requests[key], region, phase)
+                self.events.append({"phase": "failed_request_not_retried",
+                                    "request_sha256": key, "origin": self.request_origins[key]})
                 continue
             error = None
             if self.calls >= self.cfg.max_calls:
@@ -193,9 +207,32 @@ class Search:
                 for name in ("input_tokens", "output_tokens"):
                     self.usage[name] += usage[name]
             self.trace.append(row)
+            self.request_origins[key] = {"sequence": row["sequence"], "request_sha256": key,
+                                         "question_ids": list(batch), "status": row["status"]}
+            if error:
+                self.failed_requests[key] = error
             if self.expired(region, phase):
                 break
         return result
+
+    def request_origins_for(self, state, questions):
+        origins = []
+        try:
+            for batch, failed in pack_questions(state, questions):
+                if failed:
+                    origins.append({"request_sha256": None, "question_ids": [failed],
+                                    "status": "preflight-failed", "sequence": None})
+                    continue
+                key = hashlib.sha256(encode_request(state, batch)).hexdigest()
+                if key in self.request_origins:
+                    origins.append(deepcopy(self.request_origins[key]))
+                else:
+                    origins.append({"request_sha256": key, "question_ids": list(batch),
+                                    "status": "not-dispatched", "sequence": None})
+        except JevError:
+            origins.append({"request_sha256": None, "question_ids": list(questions),
+                            "status": "preflight-failed", "sequence": None})
+        return origins
 
     def add_support(self, span, score, origin, state, group_id):
         if score >= self.cfg.report_threshold:
@@ -255,10 +292,10 @@ class Search:
         for qid, answer in answers.items():
             # Gate: the weaker of stated confidence and
             # the chosen option's own displayed probability executes.
-            if qid.startswith("rank_") and min(
+            if qid.startswith("rank_") and (self.scoped or min(
                     answer["confidence"],
                     answer["probabilities"][answer["choice"]],
-            ) >= self.cfg.choice_confidence:
+            ) >= self.cfg.choice_confidence):
                 selected = next((s for s in targets if s.id == answer["choice"]), None)
                 if selected is not None:
                     group["priority"].extend(self.gated_candidates(
@@ -267,6 +304,10 @@ class Search:
 
     def gated_candidates(self, answer, candidates, limit):
         """Use the vector within one menu; every executed option keeps its gate."""
+        if self.scoped:
+            selected = select_exploration(answer, [s.id for s in candidates], limit)
+            by_id = {s.id: s for s in candidates}
+            return [by_id[key] for key in selected]
         if answer["choice"] not in {s.id for s in candidates}:
             return []
         eligible = [s for s in candidates if s.id in answer["probabilities"] and
@@ -408,6 +449,20 @@ class Search:
     def verify(self, group, spans):
         if not spans:
             return
+        if self.scoped:
+            for span in spans:
+                view = self.scoped_verification_view(group, span)
+                row, _ = self.scoped.evaluate(span, view["state"], group_id=view["id"])
+                view["state"] = self.scoped.states[row["id"]]
+                self.scoped.eligible.add(row["claim_id"])
+                value = row["roles"]["supports_failure"]
+                self.rechecks.append({"target": [span.start, span.end],
+                    "view_id": view["id"], "state_sha256": digest(view["state"]),
+                    "score": value, "claim_id": row["claim_id"],
+                    "evaluation_id": row["id"], "disposition": row["disposition"]})
+                if value is not None and Decimal(value) >= self.cfg.drill_threshold:
+                    self.action_targets.add(span)
+            return
         questions = {"verify_" + span.id: noul(self.pack, "verify", span) for span in spans}
         answers = self.ask(group["state"], questions, group["region"], "verify")
         for span in spans:
@@ -423,6 +478,43 @@ class Search:
             if value is not None and value >= self.cfg.report_threshold:
                 self.verified[span] = group
                 self.add_support(span, value, "direct_recheck", group["state"], group["id"])
+
+    def scoped_verification_view(self, group, target):
+        """Carry selected source passages into direct verification, without scores."""
+        state = deepcopy(group["state"])
+        records = {}
+        for region, bucket in self.evidence_by_target.items():
+            if region.start <= target.start and target.end <= region.end:
+                for record in bucket.values():
+                    records[record["ref"].id] = record
+        records = sorted(records.values(), key=lambda r: (-r["score"], r["ref"].id))
+        admitted = 0
+        for record in records:
+            ref = record["ref"]
+            primary_visible = ref.source is self.source and any(
+                p["start_line"] <= ref.span.start and ref.span.end <= p["end_line"]
+                for p in state["excerpts"])
+            external_visible = any(p["file"] == ref.label and p["source_sha256"] == ref.source.sha256
+                and p["start_line"] <= ref.span.start and ref.span.end <= p["end_line"]
+                for p in state.get("related_sources", []) + state.get("investigation_evidence", []))
+            if primary_visible or external_visible:
+                continue
+            if admitted >= self.cfg.evidence_beam_width:
+                self.issue("verification_evidence_limit", target, "verify")
+                break
+            state.setdefault("related_sources", []).append(excerpt(ref))
+            try:
+                encode_request(state, {"probe": noul(self.pack, "verify", target)})
+            except JevError as exc:
+                state["related_sources"].pop()
+                self.issue(exc.code, target, "verify")
+                continue
+            admitted += 1
+        view = {**group, "id": f"SV{len(self.groups) + 1}", "state": state,
+                "region": target, "targets": [target], "scores": {}, "priority": [],
+                "phase": "claim-evidence"}
+        self.groups.append(view)
+        return view
 
     def localize(self, group, target):
         candidates = contiguous_candidates(target)
@@ -444,24 +536,52 @@ class Search:
             self.existence_checks.append({
                 "target": [target.start, target.end], "view_id": group["id"],
                 "score": str(answers["exists"]["noul"])})
-            if (answers["exists"]["noul"] < self.cfg.drill_threshold
-                    or min(where["confidence"],
+            if ((answers["exists"]["noul"] < self.cfg.drill_threshold and
+                    not (self.scoped and (where["choice"] == "unlocalized" or target in self.support)))
+                    or (not self.scoped and min(where["confidence"],
                            where["probabilities"][where["choice"]],
-                           ) < self.cfg.choice_confidence):
+                           ) < self.cfg.choice_confidence)):
                 return
             selected = self.gated_candidates(where, candidates, min(
                 self.cfg.localization_beam_width, self.cfg.max_localizations - examined))
             if not selected:  # Explicit none/unlocalized, not a clean verdict.
+                if self.scoped:
+                    # Preserve the parent and inspect a bounded deterministic
+                    # subdivision. These are recovery candidates, not Choice picks.
+                    recovery = [x for x in windows(target, max(1, (target.size + 1) // 2))
+                                if x != target and x in candidates]
+                    recovery = recovery[:self.cfg.max_localizations - examined]
+                    self.events.append({"phase": "localization_recovery", "target": target.id,
+                        "sentinel": where["choice"], "candidates": [x.id for x in recovery],
+                        "selection": "mechanical-subdivision-v1"})
+                    if recovery:
+                        self.verify(group, recovery)
+                    self.issue("localization_unresolved", target, "localize")
                 return
             self.verify(group, selected)
             examined += len(selected)
+            if self.scoped:
+                # One fixed menu defines this optional beam. Removing selected
+                # intervals does not remove their defects from the source, so
+                # repeatedly asking existence against a shrinking menu is not
+                # an independent search for another defect.
+                planned = self.gated_candidates(where, candidates, self.cfg.localization_beam_width)
+                self.events.append({"phase": "localization_policy_stop", "target": target.id,
+                    "policy": "one-menu-ranked-positive-v1", "verified_candidates": [s.id for s in selected],
+                    "positive_unselected": sum(where["probabilities"].get(s.id, 0) > 0
+                                               for s in candidates if s not in selected)})
+                if len(planned) > len(selected):
+                    self.issue("localization_limit", target, "localize")
+                return
             for span in selected:
                 candidates.remove(span)  # Exact options only; source unchanged.
         self.events.append({"phase": "localization_cap", "view_id": group["id"],
                             "target": target.id, "limit": self.cfg.max_localizations})
+        if self.scoped:
+            self.issue("localization_limit", target, "localize")
 
     def detailed_search(self):
-        for group in self.groups:
+        for group in list(self.groups):
             if self.expired(group["region"], "verify"):
                 break
             scored = [s for s, score in group["scores"].items()
@@ -540,6 +660,22 @@ class Search:
         return score, state
 
     def hierarchical_evidence_search(self, target, kind, group):
+        if not self.scoped:
+            return self._hierarchical_evidence_search(target, kind, group)
+        key = identity({"scope": self.scoped.scope_id, "target": target.id, "kind": kind,
+                        "configuration": self.cfg.as_dict(), "model": MODEL, "pack": self.pack_hash})
+        if key in self.search_memos:
+            records, incomplete = self.search_memos[key]
+            self.events.append({"phase": "evidence_search_reuse", "search_id": key,
+                                "target": target.id, "kind": kind, "incomplete": incomplete})
+            return deepcopy(records)
+        records = self._hierarchical_evidence_search(target, kind, group)
+        incomplete = any(i["affects_completion"] and i["range"] == [target.start, target.end]
+                         and i["phase"] == f"evidence-{kind}" for i in self.issues)
+        self.search_memos[key] = deepcopy(records), incomplete
+        return records
+
+    def _hierarchical_evidence_search(self, target, kind, group):
         """Jev-led broad-to-narrow evidence search over file or repository.
 
         Python supplies immutable passages and line coordinates. Jev alone decides
@@ -698,6 +834,22 @@ class Search:
             qid = "relation_" + ref.id
             vqid = "verify_evidence_" + ref.id
             verify_q = evidence_noul(self.pack, "verify_with_evidence", target, label)
+            if self.scoped:
+                evaluation, answers = self.scoped.evaluate(target, state, ref=ref,
+                    origin="relationship", extra_questions={qid: relation_q})
+                relation = answers.get(qid)
+                relation_value = relation["noul"] if relation is not None else None
+                value = evaluation["roles"]["supports_failure"]
+                if relation_value is not None and relation_value >= self.cfg.relation_threshold:
+                    self.scoped.eligible.add(evaluation["claim_id"])
+                    if value is not None and Decimal(value) >= self.cfg.drill_threshold:
+                        self.action_targets.add(target)
+                self.relationships.append({"target": [target.start, target.end],
+                    "evidence": ref.as_dict(), "state_sha256": digest(state),
+                    "relation_score": str(relation_value) if relation_value is not None else None,
+                    "verify_score": value, "claim_id": evaluation["claim_id"],
+                    "evaluation_id": evaluation["id"], "disposition": evaluation["disposition"]})
+                continue
             # These propositions share fixed evidence; neither consumes the
             # other's answer. They are validated atomically when one batch fits.
             answers = self.ask(state, {qid: relation_q, vqid: verify_q}, target,
@@ -749,7 +901,9 @@ class Search:
                 or not self.project.entries):
             return
         regions = {}
-        for group in self.groups:
+        for group in list(self.groups):
+            if self.scoped and group["phase"] == "whole":
+                continue
             region = group["region"]
             regions.setdefault((region.start, region.end), {
                 "region": region, "group": group})
@@ -757,7 +911,7 @@ class Search:
             start, end = key
             if self.expired(entry["region"], "evidence-project"):
                 break
-            if any(s <= start and end <= e and (e - s) > (end - start)
+            if not self.scoped and any(s <= start and end <= e and (e - s) > (end - start)
                    for s, e in regions):
                 continue
             self.events.append({"phase": "project_relationship_pass",
@@ -769,7 +923,7 @@ class Search:
             hot = [s for s, v in group.get("scores", {}).items()
                    if v is not None and v >= self.cfg.drill_threshold]
             span = (min(hot, key=lambda s: (-(group["scores"][s]), s.size))
-                    if hot else entry["region"])
+                    if hot and not self.scoped else entry["region"])
             self.hierarchical_evidence_search(span, "project", group)
             self.test_relationships(span)
 
@@ -971,6 +1125,17 @@ class Search:
                 action_group = self.investigation_group(target, group, performed, outcomes, options)
                 continue_q = noul(self.pack, "continue_investigation", target)
                 action_q = action_choice(self.pack, target, options)
+                if self.scoped:
+                    continue_q = {"type": "noul", "instructions": self.pack["policy"] +
+                        f" For {target_text(target)}, is at least one remaining nonterminal action "
+                        "in investigation.available_actions expected to materially improve the supplied "
+                        "evidence? Exclude retain and finish. Already completed work and a merely "
+                        "possible additional bug do not by themselves warrant another step.",
+                        "criteria": {"true": "A remaining nonterminal operation can materially improve evidence.",
+                                     "false": "No remaining nonterminal operation is warranted by this evidence."}}
+                    action_q["instructions"] = (self.pack["policy"] + f" For {target_text(target)}, " +
+                        "which listed action most usefully improves the supplied evidence? Choose " +
+                        "retain or finish only when no remaining nonterminal action would materially improve it.")
                 answers = self.ask(action_group["state"],
                                    {"continue": continue_q, "action": action_q},
                                    target, "action-select")
@@ -988,12 +1153,16 @@ class Search:
                 row["phase"] = "jev_action"
                 self.events.append(row)
                 if (answers["continue"]["noul"] < self.cfg.drill_threshold or
-                        min(choice_answer["confidence"],
+                        (not self.scoped and min(choice_answer["confidence"],
                             choice_answer["probabilities"][choice_answer["choice"]],
-                            ) < self.cfg.choice_confidence):
+                            ) < self.cfg.choice_confidence)):
                     terminal = "judge-stopped" if answers["continue"]["noul"] < self.cfg.drill_threshold else "uncertain-choice"
                     break
                 if action in ("retain", "finish"):
+                    if self.scoped:
+                        self.issue("action_continue_disagreement", target, "action")
+                        terminal = "unresolved-sentinel"
+                        break
                     row["executed"] = True
                     terminal = action
                     break
@@ -1038,6 +1207,10 @@ class Search:
         Disagreement, errors, or absent finer support retain the broader range.
         """
         selected = set(self.support)
+        if self.scoped:
+            # Provisional region propositions are not identical defect claims.
+            # Do not erase a parent using an unrelated child's narrow location.
+            return selected
         for parent in sorted(self.support, key=lambda s: (s.size, s.start)):
             if parent not in self.verified or self.blocked(parent):
                 continue
@@ -1079,6 +1252,9 @@ class Search:
         direct or relationship, contradicts it. Failed rechecks remain
         unknown and never count as negatives.
         """
+        if self.scoped:
+            self.scoped.promote()
+            return
         for target, value, state, ref in self.relationship_promotions:
             history = self.verify_outcomes.get(target, [])
             contrary = any(v is not None and v < self.cfg.report_threshold
@@ -1132,7 +1308,7 @@ class Search:
                                     else "unresolved_initial_suspicion"),
                      "support": self.support[s], **annotations[s]}
                     for s in sorted(selected)]
-        result = {"schema_version": 5, "tool_version": __version__, "model": MODEL,
+        result = {"schema_version": 6 if self.scoped else 5, "tool_version": __version__, "model": MODEL,
                 "question_pack_sha256": self.pack_hash,
                 "source": {"name": self.source.name,
                            "sha256": self.source.sha256,
@@ -1182,4 +1358,15 @@ class Search:
                               "deadline_exceeded": self.project.deadline_exceeded}
                              if self.project is not None else None)}
         result["handoff"] = compact_report(result)
+        if self.scoped:
+            result["scoped_verification"] = self.scoped.report()
+            result["policy_sha256"] = identity({"configuration": self.cfg.as_dict(),
+                                               "contract": self.scoped.report()["contract_version"]})
+            result["calibration"] = "uncalibrated-operating-policy"
+            result["execution_status"] = "incomplete" if (not coverage["all_lines_assessed"] or
+                any(i["affects_completion"] and not i["code"].startswith("claim_")
+                    for i in self.issues)) else "complete"
+            result["assessment_status"] = "unresolved" if any(
+                i["affects_completion"] and (i["code"].startswith("claim_") or
+                i["code"] == "context_unresolved") for i in self.issues) else "assessed"
         return result
