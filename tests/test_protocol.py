@@ -12,7 +12,7 @@ from unittest.mock import patch
 from bug_hunter import jev
 from bug_hunter.core import Span, Config
 from bug_hunter.questions import load_pack, noul, choice
-from tests.support import KEY, FixtureProvider, source, ranges, scan
+from tests.support import KEY, FixtureProvider, source, ranges, scan, legacy_exchange
 
 
 def body(questions, probabilities=None, chosen="a", confidence=0.9):
@@ -29,6 +29,7 @@ def body(questions, probabilities=None, chosen="a", confidence=0.9):
 
 class BatchContractTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(legacy_exchange())
         pack,_=load_pack()
         self.qs={"exists":noul(pack,"screen",Span(1,12)),
                  "where":{"type":"choice","instructions":"Choose an option.",
@@ -71,19 +72,19 @@ class BatchContractTests(unittest.TestCase):
         with self.assertRaises(jev.JevError):
             jev.validate_answers(json.dumps(raw).encode(),self.qs)
 
-    def test_strict_default_rejects_two_decimal_sum_099(self):
+    def test_explicit_strict_rejects_but_default_accepts_two_decimal_sum_099(self):
         raw=body(self.qs,{"a":0.33,"b":0.33,"c":0.33})
         with self.assertRaises(jev.JevError):
-            jev.validate_answers(raw,self.qs)
-        answers,_=jev.validate_answers(raw,self.qs,rounding_places=2)
+            jev.validate_answers(raw,self.qs,rounding_places=None)
+        answers,_=jev.validate_answers(raw,self.qs)
         self.assertEqual(sum(answers["where"]["probabilities"].values()),Decimal("0.99"))
 
     def test_strict_allows_only_documented_serialization_slack(self):
         raw=body(self.qs,{"a":0.3333333333333333,"b":0.3333333333333333,
                           "c":0.3333333333333333})
-        jev.validate_answers(raw,self.qs)
+        jev.validate_answers(raw,self.qs,rounding_places=None)
         with self.assertRaises(jev.JevError):
-            jev.validate_answers(body(self.qs,{"a":0.333333,"b":0.333333,"c":0.333333}),self.qs)
+            jev.validate_answers(body(self.qs,{"a":0.333333,"b":0.333333,"c":0.333333}),self.qs,rounding_places=None)
 
     def test_rounded_distribution_infeasible_102_counterexample(self):
         qs={"where":{"type":"choice","instructions":"Choose.",
@@ -120,7 +121,7 @@ class BatchContractTests(unittest.TestCase):
         jev.validate_answers(body(self.qs,{"a":0.43,"b":0.43,"c":0.14}),
                              self.qs,rounding_places=2)
         jev.validate_answers(body(self.qs,{"a":0.43,"b":0.43,"c":0.14}),
-                             self.qs)
+                             self.qs,rounding_places=None)
 
     def test_choice_argmax_mismatch_rejected_with_own_code(self):
         # Provider inconsistency, not a rounding artifact: monotone
@@ -142,7 +143,7 @@ class BatchContractTests(unittest.TestCase):
         probs={k:0 for k in qs["where"]["criteria"]}
         jev.validate_answers(body(qs,probs,chosen="a0",confidence=0),qs,rounding_places=2)
         with self.assertRaises(jev.JevError):
-            jev.validate_answers(body(qs,probs,chosen="a0",confidence=0),qs)
+            jev.validate_answers(body(qs,probs,chosen="a0",confidence=0),qs,rounding_places=None)
 
     def test_fraction_validation_does_not_depend_on_decimal_precision(self):
         raw=body(self.qs,{"a":0.33,"b":0.33,"c":0.33})
@@ -195,7 +196,7 @@ class BatchContractTests(unittest.TestCase):
             self.assertEqual(set(answer),{"exists","where"})
             receipt=json.loads(Path(gateway.last_receipt).read_text())
             self.assertEqual(receipt["question_count"],2)
-            self.assertIsNone(receipt["rounding_places"])
+            self.assertEqual(receipt["rounding_places"],2)
             self.assertEqual(set(receipt["answers"]),{"exists","where"})
 
 

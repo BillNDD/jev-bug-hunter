@@ -17,18 +17,32 @@ import time
 from . import __version__
 from .claims import select_exploration, identity
 from .core import Config, Source, Span, _coverage, windows, multiscale
-from .core import contiguous_candidates
+from .core import contiguous_candidates, _window_count, _window_at
 from .evidence import EvidenceRef, evidence_label, fitting_pair_state, excerpt
 from .jev import (JevError, encode_request, plain, validate_answer_objects, validate_usage,
-                  MODEL)
+                  MODEL, MAX_REQUEST_BYTES, DEFAULT_CHOICE_ROUNDING_PLACES)
 from .questions import (load_pack, noul, choice, screening, fitting_state,
-                        state_for, pack_questions, target_text, action_choice,
+                        state_for, prepared_question_batches, target_text, action_choice,
                         evidence_noul, LENS_KINDS)
+
+
+MAX_PREPARED_WIRE_BYTES = 1024 * 1024
 
 
 def digest(value):
     raw = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
     return hashlib.sha256(raw).hexdigest()
+
+
+def _copy_validated_answers(answers):
+    """Copy the closed answer schema; validated scalars are immutable."""
+    result = {}
+    for qid, answer in answers.items():
+        copied = answer.copy()
+        if answer["type"] == "choice":
+            copied["probabilities"] = answer["probabilities"].copy()
+        result[qid] = copied
+    return result
 
 
 class Search:
@@ -67,6 +81,7 @@ class Search:
         self.calls = self.questions = self.validated_questions = 0
         self.window_count = self.cache_hits = 0
         self.trace, self.observations, self.issues, self.events = [], [], [], []
+        self._issue_candidates = {}
         self.cache, self.groups, self.support, self.verified = {}, [], {}, {}
         self.verify_outcomes = {}
         self.rechecks, self.existence_checks, self.handoff_evidence = [], [], []
@@ -80,6 +95,7 @@ class Search:
         self.context_reassessed_states = set()
         self.request_origins, self.failed_requests = {}, {}
         self.search_memos = {}
+        self._root_packets = None
         self.scoped = None
         if config.search_policy == "scoped-v2-beta":
             from .claim_search import ScopedClaims
@@ -93,8 +109,15 @@ class Search:
     def issue(self, code, region, phase, affects=True):
         item = {"code": code, "range": [region.start, region.end],
                 "phase": phase, "affects_completion": affects}
-        if item not in self.issues:
+        # These generated key fields never change internally. Resolution may
+        # change affects_completion, so compare the current records rather
+        # than caching a fingerprint of the mutable dictionary. Scoped issues
+        # have extra identity fields and cannot equal these simple records.
+        candidates = self._issue_candidates.setdefault(
+            (code, region.start, region.end, phase), [])
+        if item not in candidates:
             self.issues.append(item)
+            candidates.append(item)
 
     def expired(self, region, phase):
         if time.monotonic() < self.deadline_at:
@@ -115,30 +138,49 @@ class Search:
                                   self.spec, ref, question,
                                   context_scope=self.context_scope)
 
-    def ask(self, state, questions, region, phase):
+    def ask(self, state, questions, region, phase, *, origins=None):
         """Byte-bounded batches; dependent decisions require a later request."""
         # Every Jev request carries the caller's declared scope (project-scope
         # fix); the judge sees the declaration, never an inference task.
         state = {**state, "context_scope": self.context_scope}
         result = {}
         if self.expired(region, phase):
+            if origins is not None:
+                origins.extend(self.request_origins_for(state, questions))
             return result
         try:
-            batches = list(pack_questions(state, questions))
+            # Keep the packer's authoritative bytes. Re-encoding each batch
+            # here, and again for scoped provenance, repeated the same work.
+            # Large screens still receive atomic preflight, but repeated state
+            # bytes cannot make retained wire storage grow without a bound.
+            prepared, retained_bytes, overflow_state = [], 0, None
+            wire_limit = min(MAX_PREPARED_WIRE_BYTES,
+                             max(0, self.cfg.max_calls - self.calls) * MAX_REQUEST_BYTES)
+            for batch, failed, wire in prepared_question_batches(state, questions):
+                key = hashlib.sha256(wire).hexdigest() if wire is not None else None
+                if wire is not None:
+                    if retained_bytes + len(wire) <= wire_limit:
+                        retained_bytes += len(wire)
+                    else:
+                        if overflow_state is None:
+                            overflow_state = json.loads(wire)["state"]
+                        wire = None
+                prepared.append((batch, failed, wire, key))
         except JevError as exc:
             self.issue(exc.code, region, phase)
+            if origins is not None:
+                origins.extend(self.request_origins_for(state, questions))
             return result
-        for batch, failed in batches:
+        state_sha256 = None
+        for batch, failed, wire, key in prepared:
             if self.expired(region, phase):
                 break
             if failed is not None:
                 self.issue("question_too_large", region, phase)
                 continue
-            wire = encode_request(state, batch)
-            key = hashlib.sha256(wire).hexdigest()
             if key in self.cache:
                 # Never return cache-owned mutable dictionaries to a caller.
-                result.update(deepcopy(self.cache[key]))
+                result.update(_copy_validated_answers(self.cache[key]))
                 self.cache_hits += 1
                 self.events.append({"phase": "judgment_reuse", "request_sha256": key,
                                     "origin": self.request_origins[key]})
@@ -156,31 +198,38 @@ class Search:
             if error:
                 self.issue(error, region, phase)
                 continue
+            if wire is None:
+                wire = encode_request(overflow_state, batch)
             self.calls += 1
             self.questions += len(batch)
             row = {"sequence": self.calls, "phase": phase,
                    "range": [region.start, region.end], "request_sha256": key,
-                   "state_sha256": digest(state), "question_sha256": digest(batch),
+                   "state_sha256": None, "question_sha256": digest(batch),
                    "question_ids": list(batch), "question_count": len(batch),
                    "status": "failed", "answers": None, "error": None}
             try:
                 sent = json.loads(wire)
+                if state_sha256 is None:
+                    # Fingerprint the owned wire snapshot, never a caller's
+                    # mutable dictionaries after request preparation.
+                    state_sha256 = digest(sent["state"])
+                row["state_sha256"] = state_sha256
                 answers = self.gw.evaluate(sent["state"], sent["questions"], metadata={
                     "sequence": self.calls, "phase": phase,
                     "window_id": region.id, "source_sha256": self.source.sha256})
                 # A conforming Gateway validates types and values atomically;
                 # the engine re-checks shapes anyway; custom gateways are not trusted.
                 answers = validate_answer_objects(answers, batch,
-                                  getattr(self.gw, "rounding_places", None))
+                                  getattr(self.gw, "rounding_places", DEFAULT_CHOICE_ROUNDING_PLACES))
                 # Menu size controls maximum mass tolerance, not semantic
                 # informativeness. Retain the actual numeric diagnostic only.
-                places = getattr(self.gw, "rounding_places", None)
+                places = getattr(self.gw, "rounding_places", DEFAULT_CHOICE_ROUNDING_PLACES)
                 row["choice_mass_allowance"] = {
                     qid: str(Fraction(len(raw["probabilities"]), 2 * 10 ** places))
                     for qid, raw in answers.items()
                     if raw["type"] == "choice" and places is not None}
                 self.cache[key] = answers
-                result.update(deepcopy(answers))
+                result.update(_copy_validated_answers(answers))
                 self.validated_questions += len(batch)
                 row.update(status="validated", answers=plain(answers))
             except JevError as exc:
@@ -213,17 +262,27 @@ class Search:
                 self.failed_requests[key] = error
             if self.expired(region, phase):
                 break
+        if origins is not None:
+            for batch, failed, _, key in prepared:
+                if failed is not None:
+                    origins.append({"request_sha256": None, "question_ids": [failed],
+                                    "status": "preflight-failed", "sequence": None})
+                elif key in self.request_origins:
+                    origins.append(deepcopy(self.request_origins[key]))
+                else:
+                    origins.append({"request_sha256": key, "question_ids": list(batch),
+                                    "status": "not-dispatched", "sequence": None})
         return result
 
     def request_origins_for(self, state, questions):
         origins = []
         try:
-            for batch, failed in pack_questions(state, questions):
+            for batch, failed, wire in prepared_question_batches(state, questions):
                 if failed:
                     origins.append({"request_sha256": None, "question_ids": [failed],
                                     "status": "preflight-failed", "sequence": None})
                     continue
-                key = hashlib.sha256(encode_request(state, batch)).hexdigest()
+                key = hashlib.sha256(wire).hexdigest()
                 if key in self.request_origins:
                     origins.append(deepcopy(self.request_origins[key]))
                 else:
@@ -234,11 +293,11 @@ class Search:
                             "status": "preflight-failed", "sequence": None})
         return origins
 
-    def add_support(self, span, score, origin, state, group_id):
+    def add_support(self, span, score, origin, state, group_id, *, state_sha256=None):
         if score >= self.cfg.report_threshold:
             self.support.setdefault(span, []).append({
                 "score": str(score), "origin": origin, "view_id": group_id,
-                "state_sha256": digest(state)})
+                "state_sha256": digest(state) if state_sha256 is None else state_sha256})
 
     def view(self, region, targets, depths, state, phase):
         state = {**state, "context_scope": self.context_scope}
@@ -258,6 +317,9 @@ class Search:
                            region, phase)
         context = [{"start_line": e["start_line"], "end_line": e["end_line"]}
                    for e in state["excerpts"]]
+        # This state is fixed for the whole view; hashing it per target made
+        # bookkeeping grow with source bytes times the number of intervals.
+        state_sha256 = digest(state)
         for span in targets:
             judgments = {}
             answer = answers.get("screen_" + span.id)
@@ -277,14 +339,14 @@ class Search:
                 "score": str(score) if score is not None else None,
                 "judgments": {k: str(v) for k, v in judgments.items()},
                 "status": "scored" if score is not None else "unreviewed",
-                "context": context, "state_sha256": digest(state)})
+                "context": context, "state_sha256": state_sha256})
             if score is not None:
                 # Report support comes from the general screen only; lens
                 # signals route investigation but never create support.
                 general = judgments.get("screen")
                 if general is not None:
                     self.add_support(span, general, "screen", state,
-                                     group["id"])
+                                     group["id"], state_sha256=state_sha256)
                 if score >= self.cfg.drill_threshold:
                     self.action_targets.add(span)
         if "need_context" in answers:
@@ -322,7 +384,7 @@ class Search:
         if not count:
             return
         entire = Span(1, count)
-        roots = windows(entire, self.cfg.width)
+        roots = self.root_packets()
         if self.cfg.whole_file and entire not in roots:
             state = self.fitting_state(entire, 0, noul(self.pack, "screen", entire))
             if state is None:
@@ -357,9 +419,17 @@ class Search:
                 self.issue("window_budget_exhausted", region, "screen")
             self.view(region, [s for s, _ in tree], dict(tree), state, "screen")
 
+    def root_packets(self):
+        """Immutable full-file geometry shared by screening and context pools."""
+        key = (len(self.source.lines), self.cfg.width)
+        if self._root_packets is None or self._root_packets[0] != key:
+            packets = tuple(windows(Span(1, key[0]), key[1])) if key[0] else ()
+            self._root_packets = key, packets
+        return self._root_packets[1]
+
     def context_pool(self, group):
         region = group["region"]
-        all_packets = windows(Span(1, len(self.source.lines)), self.cfg.width)
+        all_packets = self.root_packets()
         excerpts = group["state"]["excerpts"]
         pool = [p for p in all_packets if not any(
             e["start_line"] <= p.start and p.end <= e["end_line"] for e in excerpts)]
@@ -465,19 +535,21 @@ class Search:
             return
         questions = {"verify_" + span.id: noul(self.pack, "verify", span) for span in spans}
         answers = self.ask(group["state"], questions, group["region"], "verify")
+        state_sha256 = digest(group["state"])
         for span in spans:
             answer = answers.get("verify_" + span.id)
             value = answer["noul"] if answer is not None else None
             self.verify_outcomes.setdefault(span, []).append(value)
             self.rechecks.append({"target": [span.start, span.end],
                                   "view_id": group["id"],
-                                  "state_sha256": digest(group["state"]),
+                                  "state_sha256": state_sha256,
                                   "score": str(value) if value is not None else None})
             if value is not None and value >= self.cfg.drill_threshold:
                 self.action_targets.add(span)
             if value is not None and value >= self.cfg.report_threshold:
                 self.verified[span] = group
-                self.add_support(span, value, "direct_recheck", group["state"], group["id"])
+                self.add_support(span, value, "direct_recheck", group["state"], group["id"],
+                                 state_sha256=state_sha256)
 
     def scoped_verification_view(self, group, target):
         """Carry selected source passages into direct verification, without scores."""
@@ -536,14 +608,20 @@ class Search:
             self.existence_checks.append({
                 "target": [target.start, target.end], "view_id": group["id"],
                 "score": str(answers["exists"]["noul"])})
-            if ((answers["exists"]["noul"] < self.cfg.drill_threshold and
-                    not (self.scoped and (where["choice"] == "unlocalized" or target in self.support)))
-                    or (not self.scoped and min(where["confidence"],
-                           where["probabilities"][where["choice"]],
-                           ) < self.cfg.choice_confidence)):
-                return
             selected = self.gated_candidates(where, candidates, min(
                 self.cfg.localization_beam_width, self.cfg.max_localizations - examined))
+            if (answers["exists"]["noul"] < self.cfg.drill_threshold and
+                    not (self.scoped and (where["choice"] == "unlocalized" or target in self.support))):
+                if not (self.scoped and selected):
+                    return
+                # This target was already admitted for localization. A weak
+                # broad existence answer cannot veto its bounded real-interval
+                # beam; only independent verification may create support.
+                event.update(routing_basis="positive-mass-interval-verification",
+                             planned_verification_candidates=[s.id for s in selected])
+            if (not self.scoped and min(where["confidence"],
+                    where["probabilities"][where["choice"]]) < self.cfg.choice_confidence):
+                return
             if not selected:  # Explicit none/unlocalized, not a clean verdict.
                 if self.scoped:
                     # Preserve the parent and inspect a bounded deterministic
@@ -558,6 +636,7 @@ class Search:
                         self.verify(group, recovery)
                     self.issue("localization_unresolved", target, "localize")
                 return
+            first_recheck = len(self.rechecks)
             self.verify(group, selected)
             examined += len(selected)
             if self.scoped:
@@ -566,8 +645,16 @@ class Search:
                 # repeatedly asking existence against a shrinking menu is not
                 # an independent search for another defect.
                 planned = self.gated_candidates(where, candidates, self.cfg.localization_beam_width)
+                # A planned recheck may never dispatch, or its triad may be
+                # partial/invalid. Only this call's fully validated triads
+                # count as verified, including exact compatible cache reuse.
+                verified = [Span(*row["target"]).id for row in self.rechecks[first_recheck:]
+                            if row["score"] is not None
+                            and row["disposition"] != "unknown_evaluation"]
                 self.events.append({"phase": "localization_policy_stop", "target": target.id,
-                    "policy": "one-menu-ranked-positive-v1", "verified_candidates": [s.id for s in selected],
+                    "policy": "one-menu-ranked-positive-v1",
+                    "planned_verification_candidates": [s.id for s in selected],
+                    "verified_candidates": verified,
                     "positive_unselected": sum(where["probabilities"].get(s.id, 0) > 0
                                                for s in candidates if s not in selected)})
                 if len(planned) > len(selected):
@@ -619,17 +706,54 @@ class Search:
     def _project_evidence_roots(self, target):
         if self.project is None:
             return []
+        from .repository import ProjectEntry, ProjectIndex
         refs = []
         width = max(self.cfg.evidence_min_width, self.cfg.width * 2)
-        for entry in self.project.entries:
-            if not entry.source.lines:
-                continue
-            entire = Span(1, len(entry.source.lines))
-            for span in windows(entire, min(width, entire.size)):
+        entries = self.project.entries
+        if (type(self.cfg) is Config and type(self.project) is ProjectIndex
+                and type(entries) is tuple and all(
+                    type(entry) is ProjectEntry and type(entry.relpath) is str
+                    and type(entry.source) is Source and type(entry.source.lines) is tuple
+                    and type(entry.source.sha256) is str for entry in entries)):
+            # Count the exact global window sequence, then instantiate only
+            # its spread-selected positions. No inventory cache: later calls
+            # observe replaced entries and current line counts afresh.
+            layout, total = [], 0
+            for entry in entries:
+                if not entry.source.lines:
+                    continue
+                entire = Span(1, len(entry.source.lines))
+                local_width = min(width, entire.size)
+                count = _window_count(entire, local_width)
+                layout.append((entry, entire, local_width, count))
+                total += count
+            limit = self.cfg.max_project_candidates
+            limited = total > limit
+            if not limited:
+                indices = range(total)
+            elif limit == 1:
+                indices = (0,)
+            else:
+                indices = (i * (total - 1) // (limit - 1) for i in range(limit))
+            position = base = 0
+            for index in indices:
+                while index >= base + layout[position][3]:
+                    base += layout[position][3]
+                    position += 1
+                entry, entire, local_width, _ = layout[position]
+                span = _window_at(entire, local_width, index - base)
                 refs.append(EvidenceRef(entry.source, entry.relpath, span, "project"))
-        total = len(refs)
-        limited = total > self.cfg.max_project_candidates
-        refs = self._spread(refs, self.cfg.max_project_candidates)
+        else:
+            # Preserve the original behavior of custom/mutable library inputs.
+            for entry in entries:
+                if not entry.source.lines:
+                    continue
+                entire = Span(1, len(entry.source.lines))
+                for span in windows(entire, min(width, entire.size)):
+                    refs.append(EvidenceRef(entry.source, entry.relpath, span, "project"))
+            total = len(refs)
+            limited = total > self.cfg.max_project_candidates
+            refs = self._spread(refs, self.cfg.max_project_candidates)
         if limited:
             self.issue("project_candidate_pool_limited", target, "evidence-project")
             self.events.append({"phase": "project_candidate_pool",
@@ -1315,7 +1439,7 @@ class Search:
                            "line_count": len(self.source.lines),
                            "encoding": self.source.encoding},
                 "configuration": self.cfg.as_dict(),
-                "choice_rounding_places": getattr(self.gw, "rounding_places", None),
+                "choice_rounding_places": getattr(self.gw, "rounding_places", DEFAULT_CHOICE_ROUNDING_PLACES),
                 "context_scope": self.context_scope,
                 "specification_mode": "provided" if self.spec else "inferred",
                 "specification_sha256": (hashlib.sha256(self.spec.encode()).hexdigest()
@@ -1361,7 +1485,7 @@ class Search:
         if self.scoped:
             result["scoped_verification"] = self.scoped.report()
             result["policy_sha256"] = identity({"configuration": self.cfg.as_dict(),
-                                               "contract": self.scoped.report()["contract_version"]})
+                                               "contract": result["scoped_verification"]["contract_version"]})
             result["calibration"] = "uncalibrated-operating-policy"
             result["execution_status"] = "incomplete" if (not coverage["all_lines_assessed"] or
                 any(i["affects_completion"] and not i["code"].startswith("claim_")

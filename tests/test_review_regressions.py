@@ -19,7 +19,7 @@ from bug_hunter.evidence import EvidenceRef, evidence_label, pair_state
 from bug_hunter.handoff import relationship_read_with, merge_read_with
 from bug_hunter.questions import state_for, evidence_noul, load_pack, screening, pack_questions
 from bug_hunter.repository import ProjectIndex, ProjectEntry
-from tests.support import FixtureProvider, KEY, source, scan, ranges
+from tests.support import FixtureProvider, KEY, source, scan, ranges, legacy_exchange
 
 
 def config(**changes):
@@ -101,6 +101,9 @@ class ValidatorRepairTests(unittest.TestCase):
 
 
 class ReceiptRepairTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(legacy_exchange())
+
     def test_interrupt_keeps_durable_uncertain_dispatch(self):
         with tempfile.TemporaryDirectory() as td, patch.dict(os.environ, {"TYPESAFE_API_KEY": KEY}):
             gateway = jev.HostedJev(td)
@@ -328,6 +331,9 @@ class StateAndBudgetRepairTests(unittest.TestCase):
 
 
 class ProjectAndCliRepairTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(legacy_exchange())
+
     def test_unreadable_traversal_is_not_an_empty_complete_index(self):
         def unreadable(root, **kwargs):
             kwargs["onerror"](PermissionError("private path"))
@@ -397,7 +403,7 @@ class ProjectAndCliRepairTests(unittest.TestCase):
             self.assertEqual(report["status"], "incomplete")
 
     def test_profile_options_are_explicit_and_mutually_exclusive(self):
-        self.assertIsNone(cli.parser().parse_args(["x"]).choice_rounding_places)
+        self.assertEqual(cli.parser().parse_args(["x"]).choice_rounding_places, 2)
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
             cli.parser().parse_args(["x", "--strict-choice-mass", "--choice-rounding-places", "3"])
         self.assertEqual(caught.exception.code, 2)

@@ -171,9 +171,17 @@ def reconcile_claim(evaluations):
 
 def covers_ranges(covering, required):
     """Compare actual supplied ranges; time/order/byte count is not dominance."""
+    # A view often contains many required passages from the same snapshot.
+    # Sort that snapshot's coverage once during this comparison, not per line
+    # range. This local cache never outlives the supplied mutable records.
+    intervals_by_source = {}
     for ref in required:
-        intervals = sorted((r["start_line"], r["end_line"]) for r in covering
-                           if r["file"] == ref["file"] and r["source_sha256"] == ref["source_sha256"])
+        source_key = (ref["file"], ref["source_sha256"])
+        if source_key not in intervals_by_source:
+            intervals_by_source[source_key] = sorted(
+                (r["start_line"], r["end_line"]) for r in covering
+                if (r["file"], r["source_sha256"]) == source_key)
+        intervals = intervals_by_source[source_key]
         cursor = ref["start_line"]
         for lo, hi in intervals:
             if lo > cursor:

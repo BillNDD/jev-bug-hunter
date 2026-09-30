@@ -6,7 +6,7 @@ from decimal import Decimal
 from .claims import (ClaimKey, SourceRef, EvidenceRevision, CONTRACT_VERSION,
                      ROLES, UNRESOLVED, identity, classify_evaluation,
                      active_evaluations, reconcile_claim, verification_questions)
-from .jev import MODEL
+from .jev import MODEL, DEFAULT_CHOICE_ROUNDING_PLACES
 
 
 class ScopedClaims:
@@ -41,7 +41,9 @@ class ScopedClaims:
         from .engine import digest
         s = self.search
         key = self.key(target, ref)
-        self.claims[key.id] = key
+        key_data = key.as_dict()
+        key_id = key_data["id"]
+        self.claims[key_id] = key
         state = deepcopy(supplied)
         state["context_scope"] = s.context_scope
         proposition = ("At least one substantive defect occurs in or involves the bound target "
@@ -55,12 +57,14 @@ class ScopedClaims:
                            "The two passages may agree with each other while jointly violating "
                            "the specification. Consider all supplied guards and conditions. "
                            "Unrelated defects and missing information alone do not establish failure.")
-        state["scoped_proposition"] = {**key.as_dict(), "statement": proposition,
+        state["scoped_proposition"] = {**key_data, "statement": proposition,
                                        "contract_version": CONTRACT_VERSION}
         qs = verification_questions(target, CONTRACT_VERSION)
         if extra_questions:
             qs.update(extra_questions)
-        answers = s.ask(state, qs, target, "claim-adjudication" if adjudication else "claim-verify")
+        requests = []
+        answers = s.ask(state, qs, target, "claim-adjudication" if adjudication else "claim-verify",
+                        origins=requests)
         values = {role: answers[role]["noul"] if role in answers else None for role in ROLES}
         disposition = classify_evaluation(values, s.cfg.report_threshold,
                                           s.cfg.refute_threshold, s.cfg.context_threshold)
@@ -78,11 +82,12 @@ class ScopedClaims:
             supplied_ranges.append({k: item[k] for k in
                                     ("file", "source_sha256", "start_line", "end_line")})
         revision = EvidenceRevision(self.scope_id, digest(state), tuple(refs))
-        self.revisions[revision.id] = {"id": revision.id, **asdict(revision)}
-        requests = s.request_origins_for(state, qs)
-        row = {"claim_id": key.id, "evidence_revision_id": revision.id,
+        revision_data = asdict(revision)
+        revision_id = identity(revision_data)
+        self.revisions[revision_id] = {"id": revision_id, **revision_data}
+        row = {"claim_id": key_id, "evidence_revision_id": revision_id,
                "question_contract_sha256": identity(qs), "contract_version": CONTRACT_VERSION,
-               "model": MODEL, "rounding_places": getattr(s.gw, "rounding_places", None),
+               "model": MODEL, "rounding_places": getattr(s.gw, "rounding_places", DEFAULT_CHOICE_ROUNDING_PLACES),
                "roles": {k: str(v) if v is not None else None for k, v in values.items()},
                "disposition": disposition, "origin": origin, "origin_requests": requests,
                "group_id": group_id, "target": [target.start, target.end],
@@ -93,17 +98,17 @@ class ScopedClaims:
             row.update(supersedes=list(supersedes), union_coverage_verified=True,
                        covered_evidence_revisions=list(covered_revisions))
         row["id"] = identity(row)
-        history = self.evaluations.setdefault(key.id, {})
+        history = self.evaluations.setdefault(key_id, {})
         history.setdefault(row["id"], row)
         self.states[row["id"]] = state
         merged = reconcile_claim(history.values())
-        self.dispositions[key.id] = merged
+        self.dispositions[key_id] = merged
         # Each counterpart has its own history. A low generic screen or another
         # counterpart's explicit refutation cannot overwrite this proposition.
         if merged == "conflicted" and not adjudication:
             self.adjudicate(target, key, ref)
-            merged = self.dispositions[key.id]
-        self.update_issues(target, key.id, row, merged)
+            merged = self.dispositions[key_id]
+        self.update_issues(target, key_id, row, merged)
         return row, answers
 
     def update_issues(self, target, claim_id, row, disposition):
@@ -126,12 +131,13 @@ class ScopedClaims:
         """One union assessment per actual set of evidence revisions; no retries."""
         from .engine import digest
         s = self.search
-        history = self.evaluations[key.id]
+        key_id = key.id
+        history = self.evaluations[key_id]
         rows = sorted(history.values(), key=lambda x: x["id"])
         conflict_rows = [x for x in rows if x["disposition"] in
                          ("supported", "explicitly_refuted", "conflicted")]
         state_ids = tuple(sorted({x["evidence_revision_id"] for x in conflict_rows}))
-        marker = (key.id, state_ids)
+        marker = (key_id, state_ids)
         if marker in self.adjudicated:
             return
         self.adjudicated.add(marker)
@@ -150,7 +156,8 @@ class ScopedClaims:
             return identity({field: sorted(digest(p) for p in view.get(field, []))
                              for field in ("excerpts", "related_sources", "investigation_evidence",
                                            "evidence_coordinates")})
-        if any(content_signature(union) == content_signature(self.states[r["id"]])
+        union_signature = content_signature(union)
+        if any(union_signature == content_signature(self.states[r["id"]])
                for r in conflict_rows):
             return  # Reordering or re-asking an existing view is not new evidence.
         # evaluate() adds the binding again; check its final size inside ask().
@@ -167,10 +174,10 @@ class ScopedClaims:
                                adjudication=True, supersedes=sorted(covered_rows),
                                covered_revisions=state_ids, extra_questions=extra)
         if row["disposition"] in ("supported", "explicitly_refuted"):
-            self.dispositions[key.id] = reconcile_claim(history.values())
-            self.update_issues(target, key.id, row, self.dispositions[key.id])
+            self.dispositions[key_id] = reconcile_claim(history.values())
+            self.update_issues(target, key_id, row, self.dispositions[key_id])
         else:
-            self.update_issues(target, key.id, row, "conflicted")
+            self.update_issues(target, key_id, row, "conflicted")
 
     def promote(self):
         from .core import Span

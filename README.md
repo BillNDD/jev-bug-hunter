@@ -2,13 +2,25 @@
 
 A bounded, first-pass bug hunter — one more tool in the toolshed.
 
-**v0.5.0b1 is an experimental beta.** Existing commands use `legacy-v1`.
+**v0.5.0b2 is an experimental beta.** Existing commands use `legacy-v1`.
 Use `--search-policy scoped-v2-beta` to try evidence-scoped verification and
-broader Choice exploration. See [the beta review and migration brief](docs/BETA_REVIEW.md)
-for implemented changes, qualifications, and the remaining roadmap. The
-[validation record](docs/RELEASE_VALIDATION.md) and
-[effectiveness/performance review](docs/EXPERT_REVIEW.md) describe the evidence
-and next priorities.
+broader Choice exploration. The live scoped-policy development suite detected
+**10 of 16 defective programs**, cleared all 16 corrected controls and returned
+incomplete for both missing-evidence cases. **Six known bugs were missed; the
+full outcome acceptance gate failed.** A clear scan is not proof of correctness.
+See the [v0.5.0b2 validation and limitations](docs/BETA2_VALIDATION.md).
+
+All eleven local performance improvements and the localization fixes are tracked in the
+[running improvement table](docs/PERFORMANCE_PROGRESS.md) and the concise
+[engineering brief](docs/PERFORMANCE_BRIEF.md). Measured observations and
+code-derived expectations are labeled separately; neither establishes improved
+bug-detection accuracy or a universal runtime guarantee.
+
+The maintained beta branch is `beta/v0.5.0b1`; its current package version is
+`0.5.0b2`. The original `v0.5.0b1` tag remains a historical snapshot. The
+[original beta design](docs/BETA_REVIEW.md),
+[original validation record](docs/RELEASE_VALIDATION.md) and
+[earlier expert review](docs/EXPERT_REVIEW.md) describe that earlier version.
 
 `jev-bug-hunter` is a first-pass bug hunter for source files.
 Point it at a file — optionally with a specification and a related-files scope —
@@ -84,12 +96,12 @@ Install Python 3.11 or newer, then install this beta in a virtual environment:
 ```sh
 python -m venv .venv
 # Activate .venv using your shell's activation command.
-python -m pip install "git+https://github.com/BillNDD/jev-bug-hunter.git@v0.5.0b1"
+python -m pip install "git+https://github.com/BillNDD/jev-bug-hunter.git@v0.5.0b2"
 jev-bug-hunter --help
 ```
 
-For a source checkout, clone the repository, enter its directory, and run
-`python -m pip install .`. No third-party runtime dependencies are required.
+For a source checkout, select the `beta/v0.5.0b1` branch, enter its directory,
+and run `python -m pip install .`. No third-party runtime dependencies are required.
 
 Real scans call the hosted TypeSafe service (`api.typesafe.ai`) and need your own
 `TYPESAFE_API_KEY`. The key is read from the environment only — never a flag or
@@ -251,8 +263,8 @@ from the actual candidate text it is shown.
 | `--context-threshold` | 0.60 | context/evidence/requirement relevance threshold |
 | `--relation-threshold` | 0.70 | target↔evidence relationship threshold |
 | `--choice-confidence` | 0.50 | legacy Choice execution cutoff; beta exploration uses positive-mass ranking |
-| `--choice-rounding-places` | off | opt-in mass tolerance for nearest rounding at N places, 2–8 |
-| `--strict-choice-mass` | default behavior | mutually exclusive with explicit rounding; normalized mass with 10^-12 serialization slack |
+| `--choice-rounding-places` | 2 | fixed mass tolerance for nearest rounding at N places, 2–8 |
+| `--strict-choice-mass` | off | explicitly require normalized mass with 10^-12 serialization slack; mutually exclusive with explicit rounding |
 | `--localization-beam-width` | 3 | legacy gated intervals per round; beta positive-mass intervals from one menu; max-localizations caps both |
 | `--no-bug-lenses` | off | disable the five extra Jev bug-lens questions |
 | `--max-action-steps` / `--max-action-targets` | 4 / 32 | bounded investigation actions |
@@ -278,6 +290,24 @@ The isolated child receives the effective per-call timeout, including the
 remaining run budget. Socket timeouts report `deadline_exceeded`. The parent
 still enforces the overall transport deadline and terminates a stalled child.
 
+The development adapter reuses one serial worker and its TLS trust configuration
+within bounded request, idle and lifetime limits. Each request opens a fresh HTTPS
+connection and retains its own durable dispatch intent and terminal receipt.
+Worker failures are not retried. Unsupported worker runtimes use the existing
+single-use child, selected before dispatch. The CLI closes its owned transport
+before emitting completion; cleanup failures make the scan incomplete.
+
+Choice mass uses a fixed two-place compatibility tolerance by default in the
+CLI, hosted adapter and raw/object validators. TypeSafe's API describes the sum
+as approximate; valid displayed probabilities can total 0.99. The checker keeps
+the original values and requires that their clipped rounding intervals contain
+a normalized distribution. It still requires exact displayed argmax, finite
+values in range, matching options and atomic batch validity. It never infers a
+profile from a failed response, renormalizes it, or retries it automatically.
+Use `--strict-choice-mass` (or explicit `rounding_places=None` in Python) for the
+previous strict policy. This tolerance is a compatibility choice, not a provider
+precision guarantee. See [the localization fix](docs/ROUNDING_LOCALIZATION.md).
+
 The run deadline is checked at work boundaries; hosted transport gets at most
 the remaining time. It stops further work and records incompleteness. It cannot
 interrupt an operating-system filesystem call or an arbitrary custom gateway;
@@ -298,6 +328,23 @@ result = scan(source, gateway, config, spec=None, project=None,
 and library and is never inferred. A `project` index and
 `context_scope="project"` must agree. Custom gateways may return finite native
 floats or Decimal numbers; the same validator produces owned Decimal snapshots.
+
+A library scan borrows its gateway. When using the hosted adapter, close it when
+finished, preferably with a context manager:
+
+```python
+from bug_hunter.jev import HostedJev
+
+with HostedJev("receipts") as gateway:
+    result = scan(source, gateway, config, spec=requirements,
+                  context_scope="declared_standalone")
+```
+
+Use a gateway from one caller at a time. Its `last_receipt` and `last_call_stats`
+describe that calling thread's latest attempt. Cancellation supervises the whole
+pipe exchange, including writes. Abrupt parent death during HTTP removes that
+supervision; socket timeouts remain, so it is not a hard wall-time guarantee after
+the parent process has died.
 
 ## Testing
 
@@ -349,9 +396,9 @@ legacy report meanings remain unchanged.
 - No suspected ranges is **not** a correctness certificate. The output is a
   static-model assessment of the supplied evidence only. Thresholds are
   operating heuristics, not calibrated probabilities of real bugs.
-- Cross-file relationship detection (bugs visible only across files) is early:
-  the evidence search finds the right related material, but judges decline
-  marginal cross-file claims. Planned follow-up work.
+- Cross-file detection remains incomplete: evidence retrieval and relationship
+  judgments can miss defects. See the known C027 failure in the
+  [current validation record](docs/BETA2_VALIDATION.md).
 - Live scans need direct network egress to `api.typesafe.ai`; proxy
   configuration is not supported.
 - Private-file permission hardening (`0600`/`0700`) applies on POSIX systems.

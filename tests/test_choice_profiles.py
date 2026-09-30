@@ -2,8 +2,8 @@
 
 1. LIMITS maps response_distribution to a precise limitation label
    (the generic evaluation-failed fallback must not label it).
-2. The CLI and library default to strict normalized mass. Rounding
-   tolerance is an explicit, recorded choice.
+2. The CLI and library use a fixed two-place compatibility profile by default.
+   Explicit None/--strict-choice-mass retains strict normalized mass.
 """
 import unittest
 
@@ -23,9 +23,9 @@ class TestLimitationVocabulary(unittest.TestCase):
 
 
 class TestChoiceProfileDefault(unittest.TestCase):
-    def test_default_rounding_profile_is_strict(self):
+    def test_default_rounding_profile_is_two_places(self):
         args = parser().parse_args(["x.py"])
-        self.assertIsNone(args.choice_rounding_places)
+        self.assertEqual(args.choice_rounding_places, 2)
         self.assertFalse(args.strict_choice_mass)
 
     def test_strict_flag_selects_exact_mass(self):

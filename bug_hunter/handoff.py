@@ -59,21 +59,21 @@ def passages(lines, region, width=8):
             start = None
 
 
-def source_candidates(search, target):
+def source_candidates(search, target, *, relevant_groups=None):
     """Only passages actually present in a view assessing this exact target.
 
     Prefer the latest available view for an identical passage. A candidate is
     judged within that view, not in an invented union of unrelated contexts.
     """
-    bounds = [target.start, target.end]
-    ids = {row["view_id"] for row in search.observations
-           if [row["start_line"], row["end_line"]] == bounds}
-    ids.update(row["view_id"] for row in search.rechecks
-               if row["target"] == bounds)
+    if relevant_groups is None:
+        bounds = [target.start, target.end]
+        ids = {row["view_id"] for row in search.observations
+               if [row["start_line"], row["end_line"]] == bounds}
+        ids.update(row["view_id"] for row in search.rechecks
+                   if row["target"] == bounds)
+        relevant_groups = (g for g in search.groups if g["id"] in ids)
     pool = {}
-    for group in search.groups:
-        if group["id"] not in ids:
-            continue
+    for group in relevant_groups:
         for excerpt in group["state"]["excerpts"]:
             a, b = excerpt["start_line"], excerpt["end_line"]
             # Do not echo the suspect as its own read-with reference.
@@ -100,7 +100,7 @@ def state_hash(state):
     return hashlib.sha256(raw).hexdigest()
 
 
-def references(search, target, kind, pool):
+def references(search, target, kind, pool, *, groups=None):
     """Batched independent relevance Nouls. No generative explanation/coordinates.
 
     Return selected references, output-only truncation count, and assessment
@@ -119,7 +119,8 @@ def references(search, target, kind, pool):
     for candidate in candidates:
         group = pool[candidate]
         batches[group["id"]].append(candidate)
-    groups = {g["id"]: g for g in search.groups}
+    if groups is None:
+        groups = {g["id"]: g for g in search.groups}
     qualified, answered = [], 0
     for view_id, candidates_in_view in batches.items():
         group = groups[view_id]
@@ -144,6 +145,7 @@ def references(search, target, kind, pool):
             else:
                 questions[qid] = question
         answers = search.ask(group["state"], questions, target, phase)
+        view_state_hash = state_hash(group["state"])
         for candidate in candidates_in_view:
             qid = ("read_with_" + candidate.id if kind == "source" else
                    f"requirement_R{candidate.start}-{candidate.end}")
@@ -152,7 +154,7 @@ def references(search, target, kind, pool):
             search.handoff_evidence.append({
                 "target": [target.start, target.end], "kind": kind,
                 "candidate": [candidate.start, candidate.end],
-                "view_id": view_id, "state_sha256": state_hash(group["state"]),
+                "view_id": view_id, "state_sha256": view_state_hash,
                 "question_id": qid, "score": str(value) if value is not None else None})
             if value is None:
                 failed = True
@@ -291,9 +293,22 @@ def annotate_findings(search, selected):
     """Run after reconciliation; never add, remove or rewrite a suspicion."""
     annotations = {}
     groups = {g["id"]: g for g in search.groups}
+    # Handoff judgment calls do not append source views. Build their relation
+    # to exact targets once, retaining original group order for last-view wins.
+    targets_by_view = defaultdict(set)
+    for row in search.observations:
+        targets_by_view[row["view_id"]].add((row["start_line"], row["end_line"]))
+    for row in search.rechecks:
+        targets_by_view[row["view_id"]].add(tuple(row["target"]))
+    groups_by_target = defaultdict(list)
+    for group in search.groups:
+        for bounds in targets_by_view[group["id"]]:
+            groups_by_target[bounds].append(group)
+    parent_order = sorted(selected, key=lambda s: (s.size, s.start))
     for index, target in enumerate(sorted(selected), 1):
         read_with, failed_source = references(
-            search, target, "source", source_candidates(search, target))
+            search, target, "source", source_candidates(search, target,
+                relevant_groups=groups_by_target[(target.start, target.end)]), groups=groups)
         read_with = merge_read_with(read_with, relationship_read_with(search, target))
         failed_source = failed_source or any(i["affects_completion"] and
             i["phase"] == "handoff-relationship" and i["range"] == [target.start, target.end]
@@ -337,10 +352,9 @@ def annotate_findings(search, selected):
                     group = groups[search.support[target][-1]["view_id"]]
                 pool = {s: group for s in passages(search.spec_source.lines,
                              Span(1, len(search.spec_source.lines)))}
-                requirement, failed_spec = references(search, target, "spec", pool)
-        parents = sorted((s for s in selected if s != target and
-                          s.start <= target.start and target.end <= s.end),
-                         key=lambda s: (s.size, s.start))
+                requirement, failed_spec = references(search, target, "spec", pool, groups=groups)
+        parents = [s for s in parent_order if s != target and
+                   s.start <= target.start and target.end <= s.end]
         limits = set()
         for issue in search.issues:
             lo, hi = issue["range"]

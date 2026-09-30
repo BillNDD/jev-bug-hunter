@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from bug_hunter import jev
+from tests.support import legacy_exchange
 
 
 KEY = "offline-sentinel-credential-9e91"
@@ -173,6 +174,7 @@ class SocketTests(unittest.TestCase):
 
 class ReceiptTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(legacy_exchange())
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.env = patch.dict(os.environ, {"TYPESAFE_API_KEY": KEY})
@@ -200,8 +202,8 @@ class ReceiptTests(unittest.TestCase):
         self.assertNotIn("example.txt", saved)
         self.assertNotIn("sample", saved)
         command = run.call_args.args[0]
-        self.assertEqual(command[1], "-I")
-        self.assertEqual(Path(command[2]), Path(jev.__file__).resolve())
+        self.assertEqual(command[1:3], ["-I", "-S"])
+        self.assertEqual(Path(command[3]), Path(jev.__file__).resolve())
         self.assertNotIn(KEY, " ".join(command))
         self.assertEqual(run.call_args.kwargs["timeout"], 30.0)
         if os.name == "posix":
@@ -266,12 +268,9 @@ class ReceiptTests(unittest.TestCase):
 
     def test_receipt_failure_prevents_valid_score_from_escaping(self):
         original = jev._write_receipt
-        count = 0
 
         def persist(path, record):
-            nonlocal count
-            count += 1
-            if count == 4:
+            if record["status"] == "validated":
                 raise jev.JevError("receipt_failed")
             original(path, record)
 

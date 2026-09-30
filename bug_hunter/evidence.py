@@ -6,7 +6,7 @@ import hashlib
 
 from .core import Source, Span
 from .jev import encode_request, JevError
-from .questions import state_for
+from .questions import state_for, _source_excerpts
 
 
 @dataclass(frozen=True)
@@ -62,9 +62,9 @@ def pair_state(primary: Source, target: Span, halo: int, spec: str | None,
 def fitting_pair_state(primary: Source, target: Span, halo: int, spec: str | None,
                        evidence: EvidenceRef, probe: dict, *, context_scope=None):
     """Reduce only optional target halo; never truncate target/evidence text."""
+    state = pair_state(primary, target, halo, spec, evidence,
+                       context_scope=context_scope)
     while True:
-        state = pair_state(primary, target, halo, spec, evidence,
-                           context_scope=context_scope)
         try:
             encode_request(state, {"probe": probe})
             return state
@@ -74,6 +74,8 @@ def fitting_pair_state(primary: Source, target: Span, halo: int, spec: str | Non
             if halo == 0:
                 return None
             halo //= 2
+            extras = (evidence.span,) if evidence.source is primary else ()
+            state["excerpts"] = _source_excerpts(primary, target, halo, extras)
 
 
 def evidence_label(ref: EvidenceRef):

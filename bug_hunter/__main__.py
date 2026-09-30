@@ -13,8 +13,8 @@ import tempfile
 import time
 
 from .core import Config, Source, format_findings, scan
-from .handoff import format_handoff
-from .jev import HostedJev, JevError, check_sensitive
+from .handoff import compact_report, format_handoff
+from .jev import HostedJev, JevError, check_sensitive, DEFAULT_CHOICE_ROUNDING_PLACES
 from .repository import ProjectIndex
 
 
@@ -71,11 +71,10 @@ def parser() -> argparse.ArgumentParser:
                         default=Decimal("0.50"))
     profiles = result.add_mutually_exclusive_group()
     profiles.add_argument("--choice-rounding-places", type=int, choices=range(2, 9),
-                        default=None,
-                        help="Opt in to mass tolerance for nearest rounding at N places.")
+                        default=DEFAULT_CHOICE_ROUNDING_PLACES,
+                        help="Choice mass tolerance for nearest rounding at N places (default: 2).")
     profiles.add_argument("--strict-choice-mass", action="store_true",
-                        help="Use exact normalized-mass validation instead of "
-                             "rounding tolerance (the default).")
+                        help="Require normalized Choice mass instead of the default rounding tolerance.")
     result.add_argument("--localization-beam-width", type=int, default=3,
                         help="Maximum candidate intervals per localization round; each keeps the confidence gate.")
     result.add_argument("--max-handoff-candidates", type=int, default=64,
@@ -217,18 +216,43 @@ def execute(args: argparse.Namespace) -> int:
         rounding_places=(None if args.strict_choice_mass
                          else args.choice_rounding_places),
     )
-    gateway.check_sensitive(source.name, "\n".join(source.lines),
-                            "\n".join(spec.lines) if spec is not None else None)
-    if spec is None:
-        print(
-            "Intent is inferred from the file; no specification was supplied.",
-            file=sys.stderr,
-        )
-    result = scan(source, gateway, config=config, spec=spec, project=project,
-                  context_scope={"project": "project",
-                                 "standalone": "declared_standalone",
-                                 "isolate": "owner_isolated"}[args.scope],
-                  deadline_at=deadline_at)
+    result = None
+    try:
+        if spec is None:
+            print(
+                "Intent is inferred from the file; no specification was supplied.",
+                file=sys.stderr,
+            )
+        result = scan(source, gateway, config=config, spec=spec, project=project,
+                      context_scope={"project": "project",
+                                     "standalone": "declared_standalone",
+                                     "isolate": "owner_isolated"}[args.scope],
+                      deadline_at=deadline_at)
+    finally:
+        # The CLI owns this gateway. Finish cleanup before saving or printing
+        # any complete report; a library scan instead borrows its gateway.
+        cleanup_error = None
+        try:
+            gateway.close()
+        except JevError as exc:
+            cleanup_error = exc.code
+        except Exception:
+            cleanup_error = "transport_failed"
+        if cleanup_error:
+            print(f"Transport cleanup failed ({cleanup_error}); scan is incomplete.",
+                  file=sys.stderr)
+            if result is not None:
+                # Preserve every finding and known usage counter. Cleanup is
+                # an execution limitation, not a fabricated semantic answer.
+                result["cleanup_error"] = cleanup_error
+                if source.lines:
+                    result["issues"].append({"code": cleanup_error,
+                        "range": [1, len(source.lines)], "phase": "transport-cleanup",
+                        "affects_completion": True})
+                result["status"] = result["scan_status"] = result["handoff_status"] = "incomplete"
+                if "execution_status" in result:
+                    result["execution_status"] = "incomplete"
+                result["handoff"] = compact_report(result)
     result["run_id"] = run_dir.name
     result["started_at_utc"] = started_at
     result["finished_at_utc"] = datetime.now(timezone.utc).isoformat()

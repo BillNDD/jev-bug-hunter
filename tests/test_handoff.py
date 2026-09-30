@@ -17,7 +17,7 @@ from bug_hunter.core import Source, Span, Config
 from bug_hunter.engine import Search
 from bug_hunter.handoff import (assessment, passages, format_handoff,
                                source_candidates, capped)
-from tests.support import FixtureProvider, KEY, source, ranges, scan
+from tests.support import FixtureProvider, KEY, source, ranges, scan, legacy_exchange
 
 FIXTURE = ('def helper(values):\n'
            '    return [float(v) for v in values]\n\n'
@@ -270,6 +270,9 @@ class HandoffTests(unittest.TestCase):
 
 
 class CompactCliTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(legacy_exchange())
+
     def run_cli(self, root, fmt=None, override=selected_references, spec=True):
         path=root/'fixture.txt';path.write_text(FIXTURE,encoding='utf-8')
         req=root/'requirements.txt';req.write_bytes(b'\xef\xbb\xbf'+SPEC.replace('\n','\r\n').encode())

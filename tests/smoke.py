@@ -21,7 +21,7 @@ from unittest.mock import patch
 from bug_hunter import __main__ as cli, jev, __version__
 from bug_hunter.core import Span
 from bug_hunter.handoff import format_handoff
-from tests.support import FixtureProvider, KEY
+from tests.support import FixtureProvider, KEY, legacy_exchange
 
 
 def run_case(root, name, provider, *, n=96, extra=(), expected_exit=0,
@@ -50,7 +50,7 @@ def run_case(root, name, provider, *, n=96, extra=(), expected_exit=0,
             item.write_text(body, encoding="utf-8")
         argv += ["--project-root", str(folder)]
     # A real network attempt fails this harness instead of silently proceeding.
-    with patch.dict(os.environ,{"TYPESAFE_API_KEY":KEY}), \
+    with legacy_exchange(), patch.dict(os.environ,{"TYPESAFE_API_KEY":KEY}), \
          patch.object(socket,"create_connection",side_effect=AssertionError("network forbidden")), \
          patch.object(jev.http.client,"HTTPSConnection",side_effect=AssertionError("network forbidden")), \
          patch.object(jev.subprocess,"run",side_effect=process or provider.process), \

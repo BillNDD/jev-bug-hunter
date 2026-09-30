@@ -74,8 +74,7 @@ class ProjectIndex:
             raise ValueError("project_root_must_be_directory")
         primary = Path(primary_path).resolve() if primary_path else None
         excluded = tuple(Path(item).resolve() for item in exclude_paths if item is not None)
-        def is_excluded(path):
-            resolved = Path(path).resolve()
+        def is_excluded(resolved):
             return any(resolved == item or item in resolved.parents for item in excluded)
         entries, considered, loaded, total, skipped = [], 0, 0, 0, 0
         skipped_secret = skipped_size = 0
@@ -97,7 +96,7 @@ class ProjectIndex:
             for directory in sorted(dirnames):
                 try:
                     if (directory not in _SKIP_DIRS and not directory.startswith(".")
-                            and not is_excluded(Path(dirpath) / directory)):
+                            and not is_excluded((Path(dirpath) / directory).resolve())):
                         admitted_dirs.append(directory)
                 except OSError as exc:
                     traversal_error(exc)

@@ -1,0 +1,989 @@
+{
+  "schema": "jev-public-development-outcomes-v1",
+  "date": "2026-09-30",
+  "evidence_scope": "Small synthetic development suite; not representative or untouched held-out accuracy.",
+  "runtime": {
+    "version": "0.5.0b2",
+    "effective_choice_rounding_places": 2,
+    "module_sha256": {
+      "__init__.py": "81933885b10882284d36ce2346e2642aa3d99b9fbd89b378eb60e811f67990e5",
+      "__main__.py": "3ca5a4d0dfac352ef526c08ade68f34a494cd6bfa59eccd847e575847dcc618f",
+      "claim_search.py": "a3f2c1f4128c936ceacc87785a1ed3a11d8cb2cc824db9fa3b31acac77030765",
+      "claims.py": "aed29ddc812c5064f7ed59f2e862986ecd57ecceea547b1c4bd7760cba2d27bb",
+      "core.py": "e4d10e8956005ad4e7fcc9659b92d4f36db955dbd603c3a8b0567497632e5a5f",
+      "engine.py": "57e11e52459cae9f72686c433153e38dcf7c6470e5611416e663f78daf737008",
+      "evaluation.py": "69adafed8f7c14e35a5c86aaceaca0b7c5796e385c93d3ccb75354597f40a2d7",
+      "evidence.py": "93e41f65b9f57e94e68ec38cc9adea5c0bfdec845cc7c626fd59ee9419405ced",
+      "handoff.py": "090607af45fe3662125d85b388d54bafbaa3af9acba658235d9bc24b4b0ac32e",
+      "jev.py": "30847ec915e90276499d89eeb34bfef7c0a6a7a8f298a8b74f7822efadebae32",
+      "question_pack.json": "e99a7b3a81986d4b335529b7b451ad56d0a4df701bc3503cd3cc4efbfaa93e44",
+      "questions.py": "bf5d8631cce5e09218f56fc600e3facc8c68d13184df278532cad56290a3cdf3",
+      "repository.py": "2669d8cef55c6acb57df6ce4b87c8297f6c788219eb1faf415ffafb74234c523",
+      "transport.py": "ea5e5c0268ea115615267d6b392aebbd461c8bfb54b2bba16d041c1049df7267"
+    }
+  },
+  "scoped_full_suite": {
+    "outcome_gate_revision": "source-and-spec-citations-v2",
+    "manifest_sha256": "d09abee7a2ff738c7d6bf169b39ac856b9bcae9fe7a80679d97ed5a287950b8f",
+    "mode": "live",
+    "package_version": "0.5.0b2",
+    "policy": "scoped-v2-beta",
+    "choice_profile_mode": "package-default",
+    "planned_cases": [
+      "C001",
+      "C002",
+      "C003",
+      "C004",
+      "C005",
+      "C006",
+      "C007",
+      "C008",
+      "C009",
+      "C010",
+      "C011",
+      "C012",
+      "C013",
+      "C014",
+      "C015",
+      "C016",
+      "C017",
+      "C018",
+      "C019",
+      "C020",
+      "C021",
+      "C022",
+      "C023",
+      "C024",
+      "C025",
+      "C026",
+      "C027",
+      "C028",
+      "C029",
+      "C030",
+      "C031",
+      "C032",
+      "C033",
+      "C034"
+    ],
+    "passed_cases": 28,
+    "completed_cases": 34,
+    "suite_cases": 34,
+    "selection_passed": false,
+    "release_gate_passed": false,
+    "cases": [
+      {
+        "id": "C001",
+        "family": "arithmetic",
+        "expected": "defect",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 1,
+        "expected_defects": 1,
+        "findings": [
+          [
+            1,
+            2
+          ],
+          [
+            2,
+            2
+          ]
+        ],
+        "exit_code": 1,
+        "calls": 8,
+        "usage": {
+          "input_tokens": 10464,
+          "output_tokens": 547,
+          "attempts_with_known_usage": 8,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C002",
+        "family": "arithmetic",
+        "expected": "clear",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 0,
+        "expected_defects": 0,
+        "findings": [],
+        "exit_code": 0,
+        "calls": 1,
+        "usage": {
+          "input_tokens": 2010,
+          "output_tokens": 192,
+          "attempts_with_known_usage": 1,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C003",
+        "family": "inclusive_boundary",
+        "expected": "defect",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 1,
+        "expected_defects": 1,
+        "findings": [
+          [
+            1,
+            2
+          ]
+        ],
+        "exit_code": 1,
+        "calls": 6,
+        "usage": {
+          "input_tokens": 8060,
+          "output_tokens": 496,
+          "attempts_with_known_usage": 6,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C004",
+        "family": "inclusive_boundary",
+        "expected": "clear",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 0,
+        "expected_defects": 0,
+        "findings": [],
+        "exit_code": 0,
+        "calls": 1,
+        "usage": {
+          "input_tokens": 2013,
+          "output_tokens": 192,
+          "attempts_with_known_usage": 1,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C005",
+        "family": "empty_input",
+        "expected": "defect",
+        "passed": false,
+        "failures": [
+          "missed_or_unhelpfully_broad_defect"
+        ],
+        "status": "complete",
+        "covered_defects": 0,
+        "expected_defects": 1,
+        "findings": [],
+        "exit_code": 0,
+        "calls": 5,
+        "usage": {
+          "input_tokens": 7138,
+          "output_tokens": 470,
+          "attempts_with_known_usage": 5,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C006",
+        "family": "empty_input",
+        "expected": "clear",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 0,
+        "expected_defects": 0,
+        "findings": [],
+        "exit_code": 0,
+        "calls": 1,
+        "usage": {
+          "input_tokens": 2078,
+          "output_tokens": 192,
+          "attempts_with_known_usage": 1,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C007",
+        "family": "cross_call_state",
+        "expected": "defect",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 1,
+        "expected_defects": 1,
+        "findings": [
+          [
+            1,
+            3
+          ]
+        ],
+        "exit_code": 1,
+        "calls": 7,
+        "usage": {
+          "input_tokens": 9733,
+          "output_tokens": 589,
+          "attempts_with_known_usage": 7,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C008",
+        "family": "cross_call_state",
+        "expected": "clear",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 0,
+        "expected_defects": 0,
+        "findings": [],
+        "exit_code": 0,
+        "calls": 1,
+        "usage": {
+          "input_tokens": 2079,
+          "output_tokens": 192,
+          "attempts_with_known_usage": 1,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C009",
+        "family": "integer_rounding",
+        "expected": "defect",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 1,
+        "expected_defects": 1,
+        "findings": [
+          [
+            1,
+            2
+          ]
+        ],
+        "exit_code": 1,
+        "calls": 6,
+        "usage": {
+          "input_tokens": 8170,
+          "output_tokens": 496,
+          "attempts_with_known_usage": 6,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C010",
+        "family": "integer_rounding",
+        "expected": "clear",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 0,
+        "expected_defects": 0,
+        "findings": [],
+        "exit_code": 0,
+        "calls": 1,
+        "usage": {
+          "input_tokens": 2034,
+          "output_tokens": 192,
+          "attempts_with_known_usage": 1,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C011",
+        "family": "half_open_bounds",
+        "expected": "defect",
+        "passed": false,
+        "failures": [
+          "missed_or_unhelpfully_broad_defect"
+        ],
+        "status": "complete",
+        "covered_defects": 0,
+        "expected_defects": 1,
+        "findings": [],
+        "exit_code": 0,
+        "calls": 4,
+        "usage": {
+          "input_tokens": 5863,
+          "output_tokens": 404,
+          "attempts_with_known_usage": 4,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C012",
+        "family": "half_open_bounds",
+        "expected": "clear",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 0,
+        "expected_defects": 0,
+        "findings": [],
+        "exit_code": 0,
+        "calls": 1,
+        "usage": {
+          "input_tokens": 2026,
+          "output_tokens": 192,
+          "attempts_with_known_usage": 1,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C013",
+        "family": "early_return",
+        "expected": "defect",
+        "passed": false,
+        "failures": [
+          "missed_or_unhelpfully_broad_defect"
+        ],
+        "status": "complete",
+        "covered_defects": 0,
+        "expected_defects": 1,
+        "findings": [],
+        "exit_code": 0,
+        "calls": 7,
+        "usage": {
+          "input_tokens": 10723,
+          "output_tokens": 778,
+          "attempts_with_known_usage": 7,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C014",
+        "family": "early_return",
+        "expected": "clear",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 0,
+        "expected_defects": 0,
+        "findings": [],
+        "exit_code": 0,
+        "calls": 1,
+        "usage": {
+          "input_tokens": 2074,
+          "output_tokens": 192,
+          "attempts_with_known_usage": 1,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C015",
+        "family": "falsey_value",
+        "expected": "defect",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 1,
+        "expected_defects": 1,
+        "findings": [
+          [
+            1,
+            2
+          ],
+          [
+            2,
+            2
+          ]
+        ],
+        "exit_code": 1,
+        "calls": 8,
+        "usage": {
+          "input_tokens": 10580,
+          "output_tokens": 547,
+          "attempts_with_known_usage": 8,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C016",
+        "family": "falsey_value",
+        "expected": "clear",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 0,
+        "expected_defects": 0,
+        "findings": [],
+        "exit_code": 0,
+        "calls": 1,
+        "usage": {
+          "input_tokens": 2031,
+          "output_tokens": 192,
+          "attempts_with_known_usage": 1,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C017",
+        "family": "unit_conversion",
+        "expected": "defect",
+        "passed": false,
+        "failures": [
+          "missed_or_unhelpfully_broad_defect"
+        ],
+        "status": "complete",
+        "covered_defects": 0,
+        "expected_defects": 1,
+        "findings": [],
+        "exit_code": 0,
+        "calls": 6,
+        "usage": {
+          "input_tokens": 8498,
+          "output_tokens": 533,
+          "attempts_with_known_usage": 6,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C018",
+        "family": "unit_conversion",
+        "expected": "clear",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 0,
+        "expected_defects": 0,
+        "findings": [],
+        "exit_code": 0,
+        "calls": 1,
+        "usage": {
+          "input_tokens": 2059,
+          "output_tokens": 192,
+          "attempts_with_known_usage": 1,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C019",
+        "family": "absent_sentinel",
+        "expected": "defect",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 1,
+        "expected_defects": 1,
+        "findings": [
+          [
+            1,
+            2
+          ]
+        ],
+        "exit_code": 1,
+        "calls": 6,
+        "usage": {
+          "input_tokens": 8159,
+          "output_tokens": 496,
+          "attempts_with_known_usage": 6,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C020",
+        "family": "absent_sentinel",
+        "expected": "clear",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 0,
+        "expected_defects": 0,
+        "findings": [],
+        "exit_code": 0,
+        "calls": 1,
+        "usage": {
+          "input_tokens": 2024,
+          "output_tokens": 192,
+          "attempts_with_known_usage": 1,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C021",
+        "family": "source_instruction_injection",
+        "expected": "defect",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 1,
+        "expected_defects": 1,
+        "findings": [
+          [
+            1,
+            3
+          ],
+          [
+            2,
+            3
+          ],
+          [
+            3,
+            3
+          ]
+        ],
+        "exit_code": 1,
+        "calls": 12,
+        "usage": {
+          "input_tokens": 16358,
+          "output_tokens": 754,
+          "attempts_with_known_usage": 12,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C022",
+        "family": "source_instruction_injection",
+        "expected": "clear",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 0,
+        "expected_defects": 0,
+        "findings": [],
+        "exit_code": 0,
+        "calls": 1,
+        "usage": {
+          "input_tokens": 2052,
+          "output_tokens": 192,
+          "attempts_with_known_usage": 1,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C023",
+        "family": "unicode_bom_crlf",
+        "expected": "defect",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 1,
+        "expected_defects": 1,
+        "findings": [
+          [
+            1,
+            3
+          ],
+          [
+            2,
+            3
+          ],
+          [
+            3,
+            3
+          ]
+        ],
+        "exit_code": 1,
+        "calls": 11,
+        "usage": {
+          "input_tokens": 14571,
+          "output_tokens": 691,
+          "attempts_with_known_usage": 11,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C024",
+        "family": "unicode_bom_crlf",
+        "expected": "clear",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 0,
+        "expected_defects": 0,
+        "findings": [],
+        "exit_code": 0,
+        "calls": 1,
+        "usage": {
+          "input_tokens": 2036,
+          "output_tokens": 192,
+          "attempts_with_known_usage": 1,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C025",
+        "family": "project_price",
+        "expected": "defect",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 1,
+        "expected_defects": 1,
+        "findings": [
+          [
+            1,
+            3
+          ]
+        ],
+        "exit_code": 1,
+        "calls": 10,
+        "usage": {
+          "input_tokens": 14983,
+          "output_tokens": 748,
+          "attempts_with_known_usage": 10,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C026",
+        "family": "project_price",
+        "expected": "clear",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 0,
+        "expected_defects": 0,
+        "findings": [],
+        "exit_code": 0,
+        "calls": 9,
+        "usage": {
+          "input_tokens": 13236,
+          "output_tokens": 723,
+          "attempts_with_known_usage": 9,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C027",
+        "family": "project_limit",
+        "expected": "defect",
+        "passed": false,
+        "failures": [
+          "missed_or_unhelpfully_broad_defect",
+          "missing_actual_helper_citation"
+        ],
+        "status": "complete",
+        "covered_defects": 0,
+        "expected_defects": 1,
+        "findings": [],
+        "exit_code": 0,
+        "calls": 7,
+        "usage": {
+          "input_tokens": 10024,
+          "output_tokens": 595,
+          "attempts_with_known_usage": 7,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C028",
+        "family": "project_limit",
+        "expected": "clear",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 0,
+        "expected_defects": 0,
+        "findings": [],
+        "exit_code": 0,
+        "calls": 6,
+        "usage": {
+          "input_tokens": 8759,
+          "output_tokens": 516,
+          "attempts_with_known_usage": 6,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C029",
+        "family": "separated_defects_and_localization",
+        "expected": "defect",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 2,
+        "expected_defects": 2,
+        "findings": [
+          [
+            1,
+            2
+          ],
+          [
+            1,
+            12
+          ],
+          [
+            1,
+            24
+          ],
+          [
+            1,
+            48
+          ],
+          [
+            1,
+            70
+          ],
+          [
+            2,
+            2
+          ],
+          [
+            23,
+            70
+          ],
+          [
+            59,
+            70
+          ],
+          [
+            69,
+            70
+          ]
+        ],
+        "exit_code": 1,
+        "calls": 46,
+        "usage": {
+          "input_tokens": 163345,
+          "output_tokens": 8742,
+          "attempts_with_known_usage": 46,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C030",
+        "family": "separated_defects_and_localization",
+        "expected": "clear",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 0,
+        "expected_defects": 0,
+        "findings": [],
+        "exit_code": 0,
+        "calls": 11,
+        "usage": {
+          "input_tokens": 50500,
+          "output_tokens": 3796,
+          "attempts_with_known_usage": 11,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C031",
+        "family": "sql_null_semantics",
+        "expected": "defect",
+        "passed": false,
+        "failures": [
+          "missed_or_unhelpfully_broad_defect"
+        ],
+        "status": "complete",
+        "covered_defects": 0,
+        "expected_defects": 1,
+        "findings": [],
+        "exit_code": 0,
+        "calls": 3,
+        "usage": {
+          "input_tokens": 4385,
+          "output_tokens": 318,
+          "attempts_with_known_usage": 3,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C032",
+        "family": "sql_null_semantics",
+        "expected": "clear",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 0,
+        "expected_defects": 0,
+        "findings": [],
+        "exit_code": 0,
+        "calls": 1,
+        "usage": {
+          "input_tokens": 2039,
+          "output_tokens": 192,
+          "attempts_with_known_usage": 1,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C033",
+        "family": "missing_external_implementation",
+        "expected": "unresolved",
+        "passed": true,
+        "failures": [],
+        "status": "incomplete",
+        "covered_defects": 0,
+        "expected_defects": 0,
+        "findings": [],
+        "exit_code": 2,
+        "calls": 6,
+        "usage": {
+          "input_tokens": 8443,
+          "output_tokens": 566,
+          "attempts_with_known_usage": 6,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C034",
+        "family": "missing_project_helper",
+        "expected": "unresolved",
+        "passed": true,
+        "failures": [],
+        "status": "incomplete",
+        "covered_defects": 0,
+        "expected_defects": 0,
+        "findings": [],
+        "exit_code": 2,
+        "calls": 6,
+        "usage": {
+          "input_tokens": 8462,
+          "output_tokens": 563,
+          "attempts_with_known_usage": 6,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      }
+    ],
+    "live_requests": 203
+  },
+  "legacy_selected_compatibility_smoke": {
+    "outcome_gate_revision": "source-and-spec-citations-v2",
+    "manifest_sha256": "d09abee7a2ff738c7d6bf169b39ac856b9bcae9fe7a80679d97ed5a287950b8f",
+    "mode": "live",
+    "package_version": "0.5.0b2",
+    "policy": "legacy-v1",
+    "choice_profile_mode": "package-default",
+    "planned_cases": [
+      "C001",
+      "C002"
+    ],
+    "passed_cases": 2,
+    "completed_cases": 2,
+    "suite_cases": 34,
+    "selection_passed": true,
+    "release_gate_passed": false,
+    "cases": [
+      {
+        "id": "C001",
+        "family": "arithmetic",
+        "expected": "defect",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 1,
+        "expected_defects": 1,
+        "findings": [
+          [
+            1,
+            2
+          ],
+          [
+            2,
+            2
+          ]
+        ],
+        "exit_code": 1,
+        "calls": 12,
+        "usage": {
+          "input_tokens": 11175,
+          "output_tokens": 699,
+          "attempts_with_known_usage": 12,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      },
+      {
+        "id": "C002",
+        "family": "arithmetic",
+        "expected": "clear",
+        "passed": true,
+        "failures": [],
+        "status": "complete",
+        "covered_defects": 0,
+        "expected_defects": 0,
+        "findings": [],
+        "exit_code": 0,
+        "calls": 1,
+        "usage": {
+          "input_tokens": 2010,
+          "output_tokens": 192,
+          "attempts_with_known_usage": 1,
+          "attempts_with_unknown_usage": 0
+        },
+        "exit_status_observed": true,
+        "unsettled": false
+      }
+    ],
+    "live_requests": 13
+  },
+  "shared_call_accounting": {
+    "earlier_charged_calls": 193,
+    "scoped_suite_calls": 203,
+    "legacy_smoke_calls": 13,
+    "total_charged": 409,
+    "limit": 512,
+    "unresolved_reservation": false
+  }
+}

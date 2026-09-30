@@ -2,16 +2,36 @@
 
 No network, no learned model, no runtime fallback. Faults are preassigned spans.
 """
+from contextlib import contextmanager
 from decimal import Decimal
 import hashlib
 import json
 import re
 import subprocess
+from unittest.mock import patch
 
 from bug_hunter.core import Source, Span
 from bug_hunter import jev
 
 KEY = "offline-synthetic-key-not-a-real-credential"
+
+
+@contextmanager
+def legacy_exchange():
+    """Pin legacy subprocess fakes at the adapter's private transport seam.
+
+    The tests inside this context must also fake subprocess.run. A default
+    transport change must never bypass those fakes and start a real worker.
+    Dedicated worker tests exercise its actual protocol separately.
+    """
+    from bug_hunter.transport import KillableWorkerTransport
+    with patch.object(jev.HostedJev, "_exchange", jev.HostedJev._exchange_once), \
+            patch.object(KillableWorkerTransport, "_spawn",
+                         side_effect=AssertionError("unexpected worker in offline fixture")) as spawn:
+        try:
+            yield
+        finally:
+            spawn.assert_not_called()
 
 
 def source(n, text=None):

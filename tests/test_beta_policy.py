@@ -18,7 +18,7 @@ from bug_hunter.core import Config, Source, Span
 from bug_hunter.engine import Search
 from bug_hunter.questions import noul
 from bug_hunter.evidence import EvidenceRef
-from tests.support import FixtureProvider, KEY, scan, source
+from tests.support import FixtureProvider, KEY, scan, source, legacy_exchange
 
 
 def beta(**kwargs):
@@ -408,6 +408,9 @@ class ExplorationIntegrationTests(unittest.TestCase):
 
 
 class TransportRepairTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(legacy_exchange())
+
     def test_effective_deadline_and_environment_are_passed_to_child(self):
         with tempfile.TemporaryDirectory() as td, patch.dict(os.environ,
                 {"TYPESAFE_API_KEY": KEY, "UNRELATED_SECRET": "must-not-inherit", "HTTPS_PROXY": "unused"}):

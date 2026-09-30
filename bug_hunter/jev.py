@@ -1,13 +1,15 @@
 """Pinned, batched Noul/Choice Jev adapter. No inference occurs on import or construction.
 
-The local response profile is intentionally strict. Optional diagnostics must
-use known Boolean fields; their absence is not proof of complete ingestion.
+The default Choice mass profile accommodates two-place display rounding;
+explicit rounding_places=None selects strict normalized mass. Optional diagnostics
+must use known Boolean fields; their absence is not proof of complete ingestion.
 Receipts contain metadata and hashes, never request/response bodies. They are
 provenance records, not independently replayable evidence or bug calibration.
 """
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import (Context, Decimal, DivisionByZero, Inexact,
+                     InvalidOperation, Overflow, ROUND_HALF_EVEN, localcontext)
 from fractions import Fraction
 import hashlib
 import http.client
@@ -25,11 +27,32 @@ import uuid
 
 
 MODEL = "jev-1.13.0"
+# Fixed compatibility policy, not precision inferred from an individual reply.
+# The API documents approximately normalized mass. Preserve every displayed
+# value and exact displayed argmax; never renormalize answers to make them fit.
+DEFAULT_CHOICE_ROUNDING_PLACES = 2
 MAX_STATE_BYTES = 16 * 1024
 MAX_REQUEST_BYTES = 24 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
 MAX_QUESTIONS = 64
 MASS_SLACK = Fraction(1, 10**12)  # Explicit serialization allowance, not calibration.
+# Every accepted probability is in [0, 1], has exponent >= -1000, and a
+# Choice has at most 255 options. Summing all values and the clipped rounding
+# endpoints therefore needs at most 1003 decimal digits. One spare digit and
+# an Inexact trap make this an exact arithmetic context, independent of the
+# caller's precision, rounding mode, exponent limits, flags and traps.
+_MASS_CONTEXT = Context(prec=1004, rounding=ROUND_HALF_EVEN, Emin=-1000,
+                        Emax=1000, capitals=1, clamp=0, flags=[],
+                        traps=[InvalidOperation, DivisionByZero, Overflow, Inexact])
+_MASS_DECIMAL_SLACK = Decimal("1e-12")
+_HALF_QUANTA = tuple(Decimal((0, (5,), -places - 1)) for places in range(9))
+_ZERO = Decimal(0)
+_QUESTION_NAME = re.compile(r"[A-Za-z0-9_.-]{1,96}\Z")
+_QUESTION_FIELDS = frozenset({"type", "instructions", "criteria"})
+_NOUL_CRITERIA = frozenset({"true", "false"})
+_NOUL_FIELDS = frozenset({"type", "noul"})
+_CHOICE_FIELDS = frozenset({"type", "choice", "probabilities", "confidence"})
+_USAGE_FIELDS = frozenset({"input_tokens", "output_tokens"})
 DIAGNOSTICS = {
     "truncated", "state_truncated", "input_truncated", "output_truncated"
 }
@@ -94,14 +117,32 @@ def _json(value):
                       allow_nan=False).encode("utf-8")
 
 
+_REQUEST_PREFIX = b'{"model":' + _json(MODEL) + b',"state":'
+
+
+def _encode_validated_request(state_wire, questions_wire):
+    """Assemble owned, validated JSON fragments without re-encoding them.
+
+    Private callers must snapshot inputs, validate the question profile and
+    enforce the question count before serializing these immutable fragments.
+    Byte limits and the fixed model/envelope remain centralized here.
+    """
+    if len(state_wire) > MAX_STATE_BYTES:
+        raise JevError("request_too_large")
+    wire = b"".join((_REQUEST_PREFIX, state_wire, b',"questions":',
+                     questions_wire, b'}'))
+    if len(wire) > MAX_REQUEST_BYTES:
+        raise JevError("request_too_large")
+    return wire
+
+
 def validate_questions(questions):
     """A narrow string-only question profile, bounded before transport."""
     if type(questions) is not dict or not 1 <= len(questions) <= MAX_QUESTIONS:
         raise JevError("invalid_request")
-    name = re.compile(r"[A-Za-z0-9_.-]{1,96}\Z")
     for qid, q in questions.items():
-        if (type(qid) is not str or not name.fullmatch(qid)
-                or type(q) is not dict or set(q) != {"type", "instructions", "criteria"}
+        if (type(qid) is not str or not _QUESTION_NAME.fullmatch(qid)
+                or type(q) is not dict or q.keys() != _QUESTION_FIELDS
                 or type(q["instructions"]) is not str or not q["instructions"].strip()
                 or len(q["instructions"].encode("utf-8")) > 12000):
             raise JevError("invalid_request")
@@ -109,7 +150,7 @@ def validate_questions(questions):
         if type(c) is not dict:
             raise JevError("invalid_request")
         if q["type"] == "noul":
-            if set(c) != {"true", "false"}:
+            if c.keys() != _NOUL_CRITERIA:
                 raise JevError("invalid_request")
         elif q["type"] == "choice":
             if not 2 <= len(c) <= 255:
@@ -117,7 +158,7 @@ def validate_questions(questions):
         else:
             raise JevError("invalid_request")
         for key, text in c.items():
-            if (type(key) is not str or not name.fullmatch(key)
+            if (type(key) is not str or not _QUESTION_NAME.fullmatch(key)
                     or type(text) is not str or not text.strip()
                     or len(text.encode("utf-8")) > 12000):
                 raise JevError("invalid_request")
@@ -132,12 +173,14 @@ def encode_request(state: dict, questions=None) -> bytes:
         copied = _snapshot(state)
         qs = _snapshot({"q": QUESTION} if questions is None else questions)
         validate_questions(qs)
-        if len(_json(copied)) > MAX_STATE_BYTES:
+        state_wire = _json(copied)
+        if len(state_wire) > MAX_STATE_BYTES:
             raise JevError("request_too_large")
-        wire = _json({"model": MODEL, "state": copied, "questions": qs})
-        if len(wire) > MAX_REQUEST_BYTES:
-            raise JevError("request_too_large")
-        return wire
+        # Reuse the already encoded state; encoding the envelope again would
+        # traverse and UTF-8 encode the largest part of every request twice.
+        # These fragments have exactly the same insertion order and encoding
+        # as _json({"model": MODEL, "state": copied, "questions": qs}).
+        return _encode_validated_request(state_wire, _json(qs))
     except JevError as exc:
         error = exc.code
     except Exception:
@@ -205,6 +248,13 @@ def _probability(value):
         raise JevError("response_probability")
     if not 0 <= value <= 1:
         raise JevError("response_probability")
+    if type(value) is Decimal:
+        # Decimal is immutable. Hosted JSON parsing already produced it, so
+        # retain the exact representation instead of parsing its text again.
+        # Keep object-gateway limits identical to _decimal(str(value)).
+        if len(str(value)) > 128 or abs(value.as_tuple().exponent) > 1000:
+            raise JevError("response_probability")
+        return value
     return _decimal(str(value))
 
 
@@ -214,18 +264,18 @@ def _rounding_profile(places):
 
 
 def _distribution(probs, criteria, chosen, places):
-    """Validate mass, or opt-in common nearest-rounding interval feasibility.
+    """Validate strict mass or common nearest-rounding interval feasibility.
 
-    Fraction arithmetic avoids the ambient Decimal context rounding bounds.
+    A private bounded-precision context performs exact decimal arithmetic;
+    neither the caller's Decimal context nor binary floating point is used.
     Quantization is NEVER inferred from a response. Closed rounding intervals
     permit ties at half-quantum endpoints; no tie-breaking rule is asserted.
     """
-    if type(probs) is not dict or set(probs) != set(criteria):
+    if type(probs) is not dict or probs.keys() != criteria.keys():
         raise JevError("response_distribution")
     values = {k: _probability(v) for k, v in probs.items()}
     if type(chosen) is not str or chosen not in values:
         raise JevError("response_distribution")
-    exact = {k: Fraction(v) for k, v in values.items()}
     # Exact displayed-argmax under BOTH profiles: nearest rounding is monotone — equal inputs map to
     # equal outputs — so a true argmax cannot display strictly below a
     # rival. Displayed ties validate. A mismatch is provider
@@ -233,29 +283,37 @@ def _distribution(probs, criteria, chosen, places):
     # carries its own code so runs can count it.
     if values[chosen] != max(values.values()):
         raise JevError("choice_argmax_mismatch")
-    if places is None:
-        if abs(sum(exact.values()) - 1) > MASS_SLACK:
-            raise JevError("response_distribution")
-    else:
-        quantum = Fraction(1, 10**places)
-        # Rounding tolerance for MASS only: displayed values are exact
-        # assertions; the declared quantum bounds comparison error via
-        # +/- q/2 intervals. Grid membership is not required.
-        low = sum(max(Fraction(0), v - quantum / 2) for v in exact.values())
-        high = sum(min(Fraction(1), v + quantum / 2) for v in exact.values())
-        if not low <= 1 <= high:
-            raise JevError("response_distribution")
+    with localcontext(_MASS_CONTEXT):
+        total = sum(values.values(), _ZERO)
+        if places is None:
+            if abs(total - 1) > _MASS_DECIMAL_SLACK:
+                raise JevError("response_distribution")
+        else:
+            # Rounding tolerance is for MASS only. Summing unclipped bounds
+            # once and correcting only endpoints outside [0,1] is exactly
+            # equivalent to sum(max(0,v-h)), sum(min(1,v+h)). Off-grid values
+            # remain allowed; displayed-argmax was checked exactly above.
+            half = _HALF_QUANTA[places]
+            offset = len(values) * half
+            low, high = total - offset, total + offset
+            if low > 1 or high < 1:
+                raise JevError("response_distribution")
+            low += sum((half - v for v in values.values() if v < half), _ZERO)
+            edge = 1 - half
+            high -= sum((v - edge for v in values.values() if v > edge), _ZERO)
+            if not low <= 1 <= high:
+                raise JevError("response_distribution")
     return values
 
 
 def validate_usage(usage):
-    if (type(usage) is not dict or set(usage) != {"input_tokens", "output_tokens"}
+    if (type(usage) is not dict or usage.keys() != _USAGE_FIELDS
             or any(type(v) is not int or not 0 <= v < 2**63 for v in usage.values())):
         raise JevError("response_usage")
     return dict(usage)
 
 
-def validate_answers(raw, questions, api_key="", rounding_places=None, *, usage_out=None):
+def validate_answers(raw, questions, api_key="", rounding_places=DEFAULT_CHOICE_ROUNDING_PLACES, *, usage_out=None):
     """Validate atomically; optional usage_out receives only validated metadata.
 
     Usage is independent of semantic acceptance. No partial judgment escapes.
@@ -287,7 +345,7 @@ def validate_answers(raw, questions, api_key="", rounding_places=None, *, usage_
             usage_out.update(usage)
         if any(diagnostics.values()):
             raise JevError("response_truncated")
-        return validate_answer_objects(data["answers"], questions, rounding_places), usage
+        return _validated_answer_objects(data["answers"], questions, rounding_places), usage
     except JevError as exc:
         error = exc.code
     except Exception:
@@ -295,11 +353,16 @@ def validate_answers(raw, questions, api_key="", rounding_places=None, *, usage_
     raise JevError(error)
 
 
-def validate_answer_objects(answers, questions, rounding_places=None):
+def validate_answer_objects(answers, questions, rounding_places=DEFAULT_CHOICE_ROUNDING_PLACES):
     """Return a new normalized snapshot, using the hosted answer validator."""
     _rounding_profile(rounding_places)
     validate_questions(questions)
-    if type(answers) is not dict or set(answers) != set(questions):
+    return _validated_answer_objects(answers, questions, rounding_places)
+
+
+def _validated_answer_objects(answers, questions, rounding_places):
+    """Atomic answer checks after this call's question/profile validation."""
+    if type(answers) is not dict or answers.keys() != questions.keys():
         raise JevError("response_schema")
     result = {}
     for qid, raw in answers.items():
@@ -308,12 +371,11 @@ def validate_answer_objects(answers, questions, rounding_places=None):
             if type(raw) is not dict or raw.get("type") != q["type"]:
                 raise JevError("response_schema")
             if q["type"] == "noul":
-                if set(raw) != {"type", "noul"}:
+                if raw.keys() != _NOUL_FIELDS:
                     raise JevError("response_schema")
                 result[qid] = {"type": "noul", "noul": _probability(raw["noul"])}
             else:
-                if set(raw) != {"type", "choice", "probabilities",
-                                "confidence"}:
+                if raw.keys() != _CHOICE_FIELDS:
                     raise JevError("response_schema")
                 result[qid] = {"type": "choice", "choice": raw["choice"],
                     "probabilities": _distribution(raw["probabilities"], q["criteria"],
@@ -343,64 +405,69 @@ def plain(value):
     return value
 
 
-def _http_exchange(wire: bytes, api_key: str, timeout: float = 30.0) -> bytes:
+def _http_exchange(wire: bytes, api_key: str, timeout: float = 30.0, *, context=None) -> bytes:
     """Fixed HTTPS destination. http.client does not follow redirects/proxies."""
     connection = http.client.HTTPSConnection(
-        "api.typesafe.ai", 443, timeout=timeout, context=ssl.create_default_context())
+        "api.typesafe.ai", 443, timeout=timeout,
+        context=ssl.create_default_context() if context is None else context)
     try:
         connection.request("POST", "/v1/systemone", body=wire, headers={
             "Authorization": "Bearer " + api_key, "Content-Type": "application/json",
             "Accept": "application/json", "Accept-Encoding": "identity",
             "Connection": "close",
         })
-        response = connection.getresponse()
-        if response.status != 200:
-            code = "http_rejected"
-            if response.status in (401, 403):
-                code = "http_unauthorized"
-            elif response.status == 429:
-                code = "http_rate_limited"
-            elif 300 <= response.status < 400:
-                code = "http_redirect"
-            raise JevError(code)
-        headers = {}
-        critical = {"content-type", "content-length", "content-encoding",
-                    "transfer-encoding"}
-        for name, value in response.getheaders():
-            name = name.lower()
-            if name in critical:
-                if name in headers or "\r" in value or "\n" in value:
-                    raise JevError("response_framing")
-                headers[name] = value.strip().lower()
-        content_type = headers.get("content-type", "")
-        if not re.fullmatch(r'application/json(?:;\s*charset=(?:utf-8|"utf-8"))?',
-                            content_type):
-            raise JevError("response_type")
-        if headers.get("content-encoding", "identity") != "identity":
-            raise JevError("response_type")
-        length = headers.get("content-length")
-        transfer = headers.get("transfer-encoding")
-        if transfer is not None and (length is not None or transfer != "chunked"):
-            raise JevError("response_framing")
-        if length is not None:
-            if not re.fullmatch(r"[0-9]{1,10}", length):
-                raise JevError("response_framing")
-            if int(length) > MAX_RESPONSE_BYTES:
-                raise JevError("response_too_large")
-        chunks, count = [], 0
-        while True:
-            chunk = response.read(min(65536, MAX_RESPONSE_BYTES + 1 - count))
-            if not chunk:
-                break
-            count += len(chunk)
-            if count > MAX_RESPONSE_BYTES:
-                raise JevError("response_too_large")
-            chunks.append(chunk)
-        if length is not None and count != int(length):
-            raise JevError("response_framing")
-        return b"".join(chunks)
+        return _http_response_bytes(connection.getresponse())
     finally:
         connection.close()
+
+
+def _http_response_bytes(response):
+    """One shared strict HTTP framing boundary for both transport lifecycles."""
+    if response.status != 200:
+        code = "http_rejected"
+        if response.status in (401, 403):
+            code = "http_unauthorized"
+        elif response.status == 429:
+            code = "http_rate_limited"
+        elif 300 <= response.status < 400:
+            code = "http_redirect"
+        raise JevError(code)
+    headers = {}
+    critical = {"content-type", "content-length", "content-encoding",
+                "transfer-encoding"}
+    for name, value in response.getheaders():
+        name = name.lower()
+        if name in critical:
+            if name in headers or "\r" in value or "\n" in value:
+                raise JevError("response_framing")
+            headers[name] = value.strip().lower()
+    content_type = headers.get("content-type", "")
+    if not re.fullmatch(r'application/json(?:;\s*charset=(?:utf-8|"utf-8"))?',
+                        content_type):
+        raise JevError("response_type")
+    if headers.get("content-encoding", "identity") != "identity":
+        raise JevError("response_type")
+    length = headers.get("content-length")
+    transfer = headers.get("transfer-encoding")
+    if transfer is not None and (length is not None or transfer != "chunked"):
+        raise JevError("response_framing")
+    if length is not None:
+        if not re.fullmatch(r"[0-9]{1,10}", length):
+            raise JevError("response_framing")
+        if int(length) > MAX_RESPONSE_BYTES:
+            raise JevError("response_too_large")
+    chunks, count = [], 0
+    while True:
+        chunk = response.read(min(65536, MAX_RESPONSE_BYTES + 1 - count))
+        if not chunk:
+            break
+        count += len(chunk)
+        if count > MAX_RESPONSE_BYTES:
+            raise JevError("response_too_large")
+        chunks.append(chunk)
+    if length is not None and count != int(length):
+        raise JevError("response_framing")
+    return b"".join(chunks)
 
 
 def _metadata(value):
@@ -429,6 +496,9 @@ def _write_receipt(path: Path, receipt: dict):
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temp, path)
+        # A successful rename consumed the temporary path. Avoid a redundant
+        # filesystem probe/unlink on every durable journal transition.
+        temp = None
         if os.name == "posix":
             directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
             try:
@@ -447,9 +517,22 @@ def _write_receipt(path: Path, receipt: dict):
 
 
 class HostedJev:
-    """Single-caller adapter with a killable transport subprocess per attempt."""
+    """Single-caller adapter owning a bounded, killable transport worker.
 
-    def __init__(self, receipt_dir, deadline_seconds=30.0, rounding_places=None):
+    Use as a context manager, or call close(), when library scans finish.
+    scan() borrows this gateway and does not close it. Concurrent evaluations
+    are rejected; last_receipt/last_call_stats belong to the calling thread.
+    """
+
+    def __init__(self, receipt_dir, deadline_seconds=30.0,
+                 rounding_places=DEFAULT_CHOICE_ROUNDING_PLACES):
+        from threading import Lock, local
+        self._call_lock, self._transport_lock = Lock(), Lock()
+        self._local = local()
+        self._transport = None
+        self._transport_mode = None
+        self._closed = False
+        self.last_cleanup_error = None
         self._api_key = _key()
         _rounding_profile(rounding_places)
         self.rounding_places = rounding_places
@@ -471,6 +554,62 @@ class HostedJev:
         self.last_call_stats = None
         self.run_deadline = None
 
+    @property
+    def last_receipt(self):
+        return getattr(self._local, "receipt", None)
+
+    @last_receipt.setter
+    def last_receipt(self, value):
+        self._local.receipt = value
+
+    @property
+    def last_call_stats(self):
+        return getattr(self._local, "stats", None)
+
+    @last_call_stats.setter
+    def last_call_stats(self, value):
+        self._local.stats = value
+
+    def __enter__(self):
+        if self._closed:
+            raise JevError("transport_failed")
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+
+    def close(self):
+        """Finish owned transport cleanup; a closed gateway cannot submit again."""
+        with self._transport_lock:
+            self._closed = True
+            transport = self._transport
+        error = None
+        try:
+            if transport is not None:
+                transport.close()
+        except JevError as exc:
+            error = exc.code
+        except Exception:
+            error = "transport_failed"
+        self.last_cleanup_error = error
+        if error:
+            raise JevError(error)
+
+    def _invalidate_transport(self):
+        """Retire a failed attempt's worker without retrying its request."""
+        with self._transport_lock:
+            transport = self._transport
+        error = None
+        try:
+            if transport is not None:
+                transport.invalidate()
+        except JevError as exc:
+            error = exc.code
+        except Exception:
+            error = "transport_failed"
+        self.last_cleanup_error = error
+        return error
+
     def set_run_deadline(self, deadline):
         """Use the caller's monotonic work deadline to bound the next child."""
         self.run_deadline = deadline
@@ -483,7 +622,74 @@ class HostedJev:
         """Compatibility wrapper; new scans use batched evaluate()."""
         return self.evaluate(state, {"q": QUESTION}, metadata=metadata)["q"]["noul"]
 
+    def _exchange_once(self, wire: bytes, timeout: float) -> tuple[bytes, tuple]:
+        """Single-use child oracle retained behind the private exchange hook."""
+        env = {k: os.environ[k] for k in ("SYSTEMROOT", "WINDIR", "TEMP", "TMP")
+               if k in os.environ}
+        env["TYPESAFE_API_KEY"] = self._api_key
+        env["JEV_CALL_TIMEOUT_SECONDS"] = repr(timeout)
+        result = subprocess.run(
+            [sys.executable, "-I", "-S", str(Path(__file__).resolve()),
+             "--transport-child"], input=wire, capture_output=True, env=env,
+            timeout=timeout, check=False)
+        if result.returncode != 0:
+            code = result.stderr.decode("ascii", errors="ignore").strip()
+            raise JevError(code if code in ERROR_CODES else "transport_failed")
+        # Tuple metadata is per-call and immutable; this path has no worker
+        # reuse metadata. Response acceptance remains the receipt owner's job.
+        return result.stdout, ()
+
+    def _exchange(self, wire: bytes, timeout: float) -> tuple[bytes, tuple]:
+        """Reuse a proven killable worker; never fall back after a submission."""
+        started = time.monotonic()
+        # Direct standalone imports retain their previous single-file behavior.
+        if __package__:
+            from .transport import KillableWorkerTransport, supports_worker
+        with self._transport_lock:
+            if self._closed:
+                raise JevError("transport_failed")
+            if self._transport_mode is None:
+                self._transport_mode = ("worker" if __package__ and supports_worker()
+                                        else "single-use")
+            if self._transport_mode == "worker" and self._transport is None:
+                self._transport = KillableWorkerTransport(self._api_key)
+            transport = self._transport
+        timeout -= time.monotonic() - started
+        if self.run_deadline is not None:
+            timeout = min(timeout, self.run_deadline - time.monotonic())
+            if timeout <= 0:
+                raise JevError("run_deadline_exceeded")
+        if timeout <= 0:
+            raise JevError("deadline_exceeded")
+        if transport is None:
+            return self._exchange_once(wire, timeout)
+        reply = transport.exchange(wire, timeout)
+        if reply.request_sha256 != hashlib.sha256(wire).hexdigest():
+            raise JevError("response_framing")
+        return reply.raw, (("worker_generation", reply.worker_generation),
+                           ("worker_sequence", reply.sequence),
+                           ("worker_reused", reply.reused))
+
     def evaluate(self, state: dict, questions: dict, *, metadata: dict) -> dict:
+        """Validate one owned attempt; concurrent callers never inherit stats."""
+        if not self._call_lock.acquire(blocking=False):
+            self.last_receipt = None
+            self.last_call_stats = None
+            raise JevError("invalid_request")
+        self._failure_retired = False
+        succeeded = False
+        try:
+            result = self._evaluate(state, questions, metadata=metadata)
+            succeeded = True
+            return result
+        finally:
+            try:
+                if not succeeded and not self._failure_retired:
+                    self._invalidate_transport()
+            finally:
+                self._call_lock.release()
+
+    def _evaluate(self, state: dict, questions: dict, *, metadata: dict) -> dict:
         """Return a complete validated batch only after its receipt is saved."""
         started = time.monotonic()
         path = self.receipt_dir / ("call_" + uuid.uuid4().hex + ".json")
@@ -496,11 +702,12 @@ class HostedJev:
                    "request_sha256": None, "response_sha256": None,
                    "status": "started", "error": None, "score": None,
                    "usage": None, "transport_attempted": False}
-        _write_receipt(path, receipt)
         error, value, usage_meta = None, None, {}
         interrupted = False
         try:
             self.check_sensitive(state, questions, metadata)
+            if self._closed:
+                raise JevError("transport_failed")
             receipt["metadata"] = _metadata(metadata)
             wire = encode_request(state, questions)
             # Use the immutable wire snapshot after caller-owned objects change.
@@ -510,16 +717,14 @@ class HostedJev:
             receipt["state_sha256"] = hashlib.sha256(_json(sent["state"])).hexdigest()
             receipt["question_count"] = len(qs)
             receipt["request_sha256"] = hashlib.sha256(wire).hexdigest()
-            _write_receipt(path, receipt)
-            env = {k: os.environ[k] for k in ("SYSTEMROOT", "WINDIR", "TEMP", "TMP")
-                   if k in os.environ}
-            env["TYPESAFE_API_KEY"] = self._api_key
             timeout = self.deadline_seconds
             if self.run_deadline is not None:
                 timeout = min(timeout, self.run_deadline - time.monotonic())
                 if timeout <= 0:
                     raise JevError("run_deadline_exceeded")
-            # Durable write-ahead state: once this is saved, an interrupted
+            # Preflight is side-effect free; failures receive a terminal
+            # receipt below. The first successful-path write is the complete
+            # durable intent. Once this is saved, an interrupted
             # attempt is conservatively unknown, never safely unsubmitted.
             receipt["transport_attempted"] = True
             receipt["status"] = "dispatching"
@@ -528,18 +733,25 @@ class HostedJev:
                 timeout = min(timeout, self.run_deadline - time.monotonic())
                 if timeout <= 0:
                     raise JevError("run_deadline_exceeded")
-            env["JEV_CALL_TIMEOUT_SECONDS"] = repr(timeout)
             receipt["transport_timeout_seconds"] = timeout
             transport_started = time.monotonic()
-            result = subprocess.run(
-                [sys.executable, "-I", str(Path(__file__).resolve()),
-                 "--transport-child"], input=wire, capture_output=True, env=env,
-                timeout=timeout, check=False)
-            receipt["transport_elapsed_seconds"] = round(time.monotonic() - transport_started, 6)
-            if result.returncode != 0:
-                code = result.stderr.decode("ascii", errors="ignore").strip()
-                raise JevError(code if code in ERROR_CODES else "transport_failed")
-            raw = result.stdout
+            try:
+                raw, transport_metadata = self._exchange(wire, timeout)
+            finally:
+                receipt["transport_elapsed_seconds"] = round(time.monotonic() - transport_started, 6)
+            if transport_metadata != ():
+                if (type(transport_metadata) is not tuple or len(transport_metadata) != 3
+                        or any(type(item) is not tuple or len(item) != 2
+                               for item in transport_metadata)):
+                    raise JevError("transport_failed")
+                details = dict(transport_metadata)
+                if (set(details) != {"worker_generation", "worker_sequence", "worker_reused"}
+                        or any(type(details[k]) is not int or not 1 <= details[k] < 2**63
+                               for k in ("worker_generation", "worker_sequence"))
+                        or type(details["worker_reused"]) is not bool
+                        or details["worker_reused"] != (details["worker_sequence"] > 1)):
+                    raise JevError("transport_failed")
+                receipt.update(details)
             if type(raw) is not bytes or len(raw) > MAX_RESPONSE_BYTES:
                 raise JevError("response_too_large")
             receipt["response_sha256"] = hashlib.sha256(raw).hexdigest()
@@ -564,6 +776,10 @@ class HostedJev:
             receipt["usage"] = dict(usage_meta)
         if error:
             receipt.update(status="failed", error=error)
+            cleanup_error = self._invalidate_transport()
+            self._failure_retired = True
+            if cleanup_error:
+                receipt["cleanup_error"] = cleanup_error
         receipt["elapsed_seconds"] = round(time.monotonic() - started, 6)
         self.last_call_stats = {k: receipt[k] for k in
                                ("request_sha256", "usage", "transport_attempted")}
